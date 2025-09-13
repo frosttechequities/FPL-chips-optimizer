@@ -1,10 +1,17 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { analyzeTeamRequestSchema, type AnalyzeTeamResponse } from "@shared/schema";
+import { 
+  analyzeTeamRequestSchema, 
+  planTransfersRequestSchema,
+  type AnalyzeTeamResponse,
+  type PlanTransfersResponse 
+} from "@shared/schema";
 import { AnalysisEngine } from "./services/analysisEngine";
+import { TransferEngine } from "./services/transferEngine";
 
 const analysisEngine = new AnalysisEngine();
+const transferEngine = new TransferEngine();
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Health check route
@@ -71,6 +78,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const errorResponse: AnalyzeTeamResponse = {
+        success: false,
+        error: errorMessage
+      };
+      
+      res.status(400).json(errorResponse);
+    }
+  });
+
+  // Transfer planning route
+  app.post("/api/transfer-plan", async (req, res) => {
+    try {
+      // Validate request
+      const validatedData = planTransfersRequestSchema.parse(req.body);
+      const teamId = validatedData.teamId.toString();
+      
+      console.log(`Planning transfers for team ${teamId}...`);
+      
+      // Get current analysis result (need it for squad and budget info)
+      const analysisResult = await analysisEngine.analyzeTeam(teamId);
+      
+      if (!analysisResult) {
+        throw new Error('Could not analyze team for transfer planning');
+      }
+      
+      // Generate transfer plans
+      const plans = await transferEngine.generateTransferPlans(
+        analysisResult.players,
+        analysisResult.budget.bank,
+        analysisResult.budget.freeTransfers,
+        {
+          targetGameweek: validatedData.targetGameweek || analysisResult.gameweeks[1]?.gameweek || 1,
+          chipType: validatedData.chipType,
+          maxHits: validatedData.maxHits,
+          includeRiskyMoves: validatedData.includeRiskyMoves,
+          gameweeks: analysisResult.gameweeks
+        }
+      );
+      
+      console.log(`Generated ${plans.length} transfer plans for team ${teamId}`);
+      
+      const response: PlanTransfersResponse = {
+        success: true,
+        data: { plans }
+      };
+      
+      res.json(response);
+    } catch (error) {
+      console.error('Transfer planning error:', error);
+      
+      let errorMessage = 'Failed to generate transfer plans';
+      
+      if (error instanceof Error) {
+        if (error.message.includes('404') || error.message.includes('not found')) {
+          errorMessage = 'Team ID not found. Please check your FPL Team ID and try again.';
+        } else if (error.message.includes('validation')) {
+          errorMessage = 'Invalid request format. Please check your parameters.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      const errorResponse: PlanTransfersResponse = {
         success: false,
         error: errorMessage
       };
