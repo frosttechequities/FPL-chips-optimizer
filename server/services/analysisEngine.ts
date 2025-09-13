@@ -358,20 +358,19 @@ export class AnalysisEngine {
     });
     
     if (!bestOpportunity) return null;
-    
-    const confidence = Math.max(70, Math.min(95, Math.round((3 - bestOpportunity.fdr) * 25 + (bestOpportunity.player.points / 10))));
-    
+    const bo = bestOpportunity as BestOpportunity;
+    const confidence = Math.max(70, Math.min(95, Math.round((3 - bo.fdr) * 25 + (bo.player.points / 10))));
     return {
       chipType: 'triple-captain',
-      gameweek: bestOpportunity.gameweek,
-      priority: bestOpportunity.fdr === 1 ? 'high' : 'medium',
+      gameweek: bo.gameweek,
+      priority: bo.fdr === 1 ? 'high' : 'medium',
       title: 'Premium Captain Opportunity',
-      description: `${bestOpportunity.player.name} faces ${bestOpportunity.opponent} ${bestOpportunity.isHome ? 'at home' : 'away'} - an excellent captaincy opportunity.`,
+      description: `${bo.player.name} faces ${bo.opponent} ${bo.isHome ? 'at home' : 'away'} - an excellent captaincy opportunity.`,
       reasoning: [
-        `${bestOpportunity.player.name} has ${bestOpportunity.player.points} points this season`,
-        `Fixture difficulty rating of only ${bestOpportunity.fdr} vs ${bestOpportunity.opponent}`,
-        bestOpportunity.isHome ? 'Playing at home provides additional advantage' : 'Away fixture but very favorable opponent',
-        `${bestOpportunity.player.position} is in excellent form`
+        `${bo.player.name} has ${bo.player.points} points this season`,
+        `Fixture difficulty rating of only ${bo.fdr} vs ${bo.opponent}`,
+        bo.isHome ? 'Playing at home provides additional advantage' : 'Away fixture but very favorable opponent',
+        `${bo.player.position} is in excellent form`
       ],
       confidence
     };

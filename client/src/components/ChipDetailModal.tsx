@@ -239,9 +239,9 @@ export default function ChipDetailModal({
                               {fixture.isHome ? 'vs' : '@'} {fixture.opponent}
                             </span>
                           </div>
-                          <Badge size="sm" className={getDifficultyColor(fixture.fdr)}>
-                            {fixture.fdr}
-                          </Badge>
+                      <Badge className={getDifficultyColor(fixture.fdr)}>
+                        {fixture.fdr}
+                      </Badge>
                         </div>
                       ))}
                     </div>
@@ -285,7 +285,6 @@ export default function ChipDetailModal({
                       FDR: {gw.averageFDR.toFixed(1)}
                     </div>
                     <Badge 
-                      size="sm" 
                       variant={gw.gameweek === recommendation.gameweek ? 'default' : 'outline'}
                       className="mt-1"
                     >

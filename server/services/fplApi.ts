@@ -179,17 +179,33 @@ export class FPLApiService {
   async getPlayerExpectedPoints(playerId: number, gameweeksAhead: number = 5): Promise<number> {
     try {
       const bootstrap = await this.getBootstrapData();
-      const player = bootstrap.elements.find(p => p.id === playerId);
-      
-      if (!player) {
-        return 0;
-      }
-      
-      // Simple expected points calculation based on current form and total points
-      const pointsPerGame = player.total_points / Math.max(1, 10); // Assume ~10 games played
-      const formMultiplier = 1; // Could be enhanced with form data
-      
-      return pointsPerGame * gameweeksAhead * formMultiplier;
+      const player = bootstrap.elements.find((p) => p.id === playerId);
+      if (!player) return 0;
+
+      // Base PPG from season-to-date. Use current GW to avoid overestimating early.
+      const currentGW = await this.getCurrentGameweek();
+      const approxGamesPlayed = Math.max(1, currentGW - 1);
+      const basePPG = player.total_points / approxGamesPlayed;
+
+      // Weight upcoming fixtures by FDR for the player's team.
+      const fixtures = await this.getUpcomingFixtures(gameweeksAhead);
+      const teamFixtures = fixtures.filter(
+        (f) => f.team_h === player.team || f.team_a === player.team,
+      );
+
+      // Convert FDR (1..5) into a modest multiplier around 1.0
+      // Easier fixture (1) → ~1.3x, Harder (5) → ~0.7x
+      const fdrWeight = (fdr: number) => Math.max(0.6, Math.min(1.4, 1 + (3 - fdr) * 0.15));
+
+      const totalWeight = teamFixtures
+        .slice(0, gameweeksAhead)
+        .reduce((sum, f) => {
+          const fdr = player.team === f.team_h ? f.team_h_difficulty : f.team_a_difficulty;
+          return sum + fdrWeight(fdr);
+        }, 0);
+
+      const expected = basePPG * (totalWeight || gameweeksAhead);
+      return Math.max(0, Math.round(expected * 10) / 10);
     } catch (error) {
       console.warn(`Could not calculate expected points for player ${playerId}:`, error);
       return 0;

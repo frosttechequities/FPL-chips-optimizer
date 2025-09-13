@@ -317,12 +317,34 @@ export class TransferEngine {
         break;
         
       case 'free-hit':
-        strategy = 'Free Hit preparation - optimal team for single gameweek';
-        // For Free Hit, focus on players with best single gameweek fixtures
-        const gameweekFixtures = context.gameweeks.find(gw => gw.gameweek === context.targetGameweek);
-        if (gameweekFixtures) {
-          // This would require more complex logic to build optimal Free Hit team
-          moves.push(); // Placeholder - would implement Free Hit logic
+        strategy = 'Free Hit setup - targeting best one-week upgrades';
+        // Focus on upgrading lowest expected starters for the target GW.
+        // We treat Free Hit as zero transfer cost but still respect budget/net spend.
+        {
+          const starters = currentSquad
+            .filter(p => !p.isBench)
+            .sort((a, b) => (a.expectedPoints || 0) - (b.expectedPoints || 0))
+            .slice(0, 3); // up to 3 upgrades
+
+          for (const playerOut of starters) {
+            const replacement = this.findBestReplacement(playerOut, candidates, constraints, moves);
+            if (replacement) {
+              const netCost = replacement.price - (playerOut.sellPrice || playerOut.price);
+              const expectedGain = replacement.expectedPoints - (playerOut.expectedPoints || 0);
+              const totalNetCost = moves.reduce((s, m) => s + m.netCost, 0) + netCost;
+              if (totalNetCost <= constraints.maxBudget && expectedGain > 0) {
+                moves.push({
+                  outPlayerId: playerOut.id,
+                  outPlayerName: playerOut.name,
+                  inPlayerId: replacement.playerId,
+                  inPlayerName: replacement.name,
+                  cost: 0, // Free Hit transfers do not cost points
+                  netCost,
+                  expectedGain,
+                });
+              }
+            }
+          }
         }
         break;
     }

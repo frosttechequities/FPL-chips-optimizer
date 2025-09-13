@@ -1,66 +1,98 @@
 # FPL Chip Strategy Architect
 
-## Overview
+Personalized FPL chip timing and transfer planning based on your actual squad and upcoming fixtures. Live data from the official FPL API, clear recommendations in the UI, and a simple REST API under the hood.
 
-The FPL Chip Strategy Architect is a web application that provides personalized Fantasy Premier League (FPL) chip strategy recommendations. The tool analyzes a user's squad composition and upcoming fixture difficulty ratings to identify optimal timing for using FPL chips (Wildcard, Bench Boost, Triple Captain, and Free Hit). Built as an on-demand analysis tool, it fetches live data from the official FPL API and generates actionable insights to help managers maximize their chip effectiveness throughout the season.
+## Quickstart
 
-## User Preferences
+- Prerequisites: Node.js 20+
+- Install: `npm install`
+- Dev (API + Client on the same port): `npm run dev`
+- Type-check: `npm run check`
+- Build (client + bundled server): `npm run build`
+- Start production server: `npm start`
 
-Preferred communication style: Simple, everyday language.
+Default port is `5000` (configurable via `PORT`).
 
-## System Architecture
+## Environment
 
-### Frontend Architecture
-- **Framework**: React 18 with TypeScript
-- **Build Tool**: Vite for fast development and optimized production builds
-- **Routing**: Wouter for lightweight client-side routing
-- **State Management**: TanStack Query for server state management and caching
-- **UI Framework**: Radix UI primitives with custom shadcn/ui components
-- **Styling**: Tailwind CSS with custom design tokens and CSS variables for theming
-- **Design System**: Professional productivity tool aesthetic inspired by Linear and Notion
+- `PORT` (optional): HTTP port. Defaults to `5000`.
+- `DATABASE_URL` (optional): Only required if using Drizzle Kit migrations (not required for runtime).
 
-### Backend Architecture
-- **Runtime**: Node.js with Express.js
-- **Language**: TypeScript with ES modules
-- **API Design**: RESTful endpoints with Zod schema validation
-- **Caching Strategy**: In-memory storage with 15-minute cache expiry for analysis results
-- **Analysis Engine**: Custom algorithm that calculates squad-wide Fixture Difficulty Ratings (FDR)
-- **Error Handling**: Centralized error middleware with structured JSON responses
+## API Reference
 
-### Data Processing Pipeline
-- **FPL API Integration**: Direct integration with official Fantasy Premier League API endpoints
-- **Squad Analysis**: Processes 15-player squad composition with position mapping
-- **Fixture Difficulty Calculation**: Aggregates FDR scores across all players for each gameweek
-- **Recommendation Engine**: Identifies optimal chip timing based on FDR patterns and thresholds
-- **Response Optimization**: Lightweight JSON responses with pre-calculated recommendations
+Base URL is the same as the client (the Express server serves both).
 
-### Component Architecture
-- **Atomic Design**: Reusable UI components with consistent props interface
-- **Form Handling**: React Hook Form with Zod resolvers for type-safe validation
-- **Data Visualization**: Custom charts for fixture difficulty timeline display
-- **Responsive Design**: Mobile-first approach with progressive enhancement
-- **Accessibility**: ARIA labels and keyboard navigation support
+- GET `/api/health`
+  - Returns `{ status: "ok", timestamp }`.
 
-## External Dependencies
+- POST `/api/analyze`
+  - Body: `{ teamId: string }` (numeric string)
+  - Response: `AnalyzeTeamResponse` with:
+    - `players`: processed 15-man squad
+    - `gameweeks`: squad FDR timeline (next ~10 GWs)
+    - `recommendations`: chip suggestions (wildcard, bench-boost, triple-captain, free-hit)
+    - `budget`: bank, team value, free transfers, affordable upgrades
+  - Example:
+    ```bash
+    curl -s http://localhost:5000/api/analyze \
+      -H 'content-type: application/json' \
+      -d '{"teamId":"1234567"}'
+    ```
 
-### Core Dependencies
-- **FPL API**: Official Fantasy Premier League API for live player and fixture data
-- **Neon Database**: PostgreSQL database with Drizzle ORM for potential data persistence
-- **Google Fonts**: Inter font family for typography consistency
+- POST `/api/transfer-plan`
+  - Body: `{ teamId: string, chipType?: 'wildcard'|'bench-boost'|'triple-captain'|'free-hit', targetGameweek?: number, maxHits?: number, includeRiskyMoves?: boolean }`
+  - Response: `PlanTransfersResponse` with up to 3 plans (conservative, aggressive, chip-optimized)
+  - Example:
+    ```bash
+    curl -s http://localhost:5000/api/transfer-plan \
+      -H 'content-type: application/json' \
+      -d '{"teamId":"1234567", "chipType":"triple-captain", "maxHits":1}'
+    ```
 
-### Development Tools
-- **TypeScript**: Type safety across frontend and backend
-- **Drizzle Kit**: Database schema management and migrations
-- **ESBuild**: Fast bundling for production server code
-- **PostCSS**: CSS processing with Tailwind CSS compilation
+- POST `/api/cache/clear`
+  - Clears in-memory FPL API cache. Useful during development.
 
-### UI Libraries
-- **Radix UI**: Accessible component primitives for complex interactions
-- **Lucide React**: Icon library for consistent visual elements
-- **Class Variance Authority**: Type-safe component variant management
-- **Date-fns**: Date manipulation and formatting utilities
+## Caching
 
-### Quality Assurance
-- **Zod**: Runtime type validation for API requests and responses
-- **TanStack Query**: Request deduplication and background refetching
-- **React Error Boundaries**: Graceful error handling in UI components
+- FPL API responses: 5 minutes (in-memory, per-URL key).
+- Analysis results: 15 minutes per team (`/api/analyze` checks and returns cached result if still fresh).
+
+## Repository Layout
+
+- `server/`
+  - `index.ts`: Express setup, Vite dev middleware/static serving, error handling.
+  - `routes.ts`: REST endpoints (health, analyze, transfer-plan, cache/clear).
+  - `services/fplApi.ts`: Official FPL API wrapper with caching and helpers.
+  - `services/analysisEngine.ts`: Builds squad, FDR timeline, and chip recommendations.
+  - `services/transferEngine.ts`: Generates transfer plans (conservative, aggressive, chip-optimized).
+  - `storage.ts`: In-memory caches for analysis and FPL objects.
+  - `vite.ts`: Dev HMR and production file serving.
+- `client/`
+  - React app (Team ID input → analysis results → recommendations/details → transfer planning).
+  - Tailwind theming via CSS variables; shadcn-style UI primitives.
+- `shared/`
+  - TypeScript models and Zod schemas for requests/responses and FPL data.
+
+## Frontend UX
+
+1. Enter your Team ID on the home page.
+2. The app calls `/api/analyze` and shows:
+   - Squad overview (value, points, position groups)
+   - Fixture Difficulty chart for your entire squad
+   - Chip recommendation cards + details modal
+3. Optionally trigger `/api/transfer-plan` actions from the planner to see candidate moves.
+
+## Development Notes
+
+- TypeScript strict mode across client/server. Aliases `@` and `@shared` are configured in Vite/tsconfig.
+- Logging: concise API logs for `/api/*` with response status + timing.
+- No database required at runtime. `drizzle.config.ts` only matters if you add persistence later.
+
+## Roadmap (What we will improve next)
+
+- Free Hit planning: implement real single‑GW optimization instead of placeholder.
+- Expected points: refine heuristics (incorporate upcoming fixture difficulty weighting).
+- Currency formatting: replace mojibake (e.g., `A�`) with proper `£` formatting via `Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' })` or compact milllions (`£{value.toFixed(1)}m`).
+- Documentation: keep this file aligned with behavior as features evolve.
+
+If you’re running on Replit, this repo is configured to serve both API and client on the same port for a smooth DX.
