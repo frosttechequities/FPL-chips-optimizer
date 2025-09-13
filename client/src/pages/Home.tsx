@@ -2,6 +2,7 @@ import { useState } from "react";
 import AppHeader from "@/components/AppHeader";
 import TeamIdInput from "@/components/TeamIdInput";
 import ChipRecommendationCard from "@/components/ChipRecommendationCard";
+import ChipDetailModal from "@/components/ChipDetailModal";
 import SquadOverview from "@/components/SquadOverview";
 import FixtureDifficultyChart from "@/components/FixtureDifficultyChart";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { type AnalyzeTeamResponse, type AnalysisResult } from "@shared/schema";
+import { type AnalyzeTeamResponse, type AnalysisResult, type ChipRecommendation } from "@shared/schema";
 
 
 type AppState = 'input' | 'loading' | 'results' | 'error';
@@ -19,6 +20,8 @@ export default function Home() {
   const [teamId, setTeamId] = useState('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedRecommendation, setSelectedRecommendation] = useState<ChipRecommendation | null>(null);
 
   const analyzeMutation = useMutation({
     mutationFn: async (teamId: string) => {
@@ -63,6 +66,19 @@ export default function Home() {
   const handleRetry = () => {
     if (teamId) {
       handleAnalyze(teamId);
+    }
+  };
+
+  const handleViewDetails = (chipType: string, gameweek: number) => {
+    if (!analysisResult) return;
+    
+    const recommendation = analysisResult.recommendations.find(
+      r => r.chipType === chipType && r.gameweek === gameweek
+    );
+    
+    if (recommendation) {
+      setSelectedRecommendation(recommendation);
+      setIsModalOpen(true);
     }
   };
 
@@ -206,9 +222,7 @@ export default function Home() {
                     <ChipRecommendationCard 
                       key={`${recommendation.chipType}-${index}`}
                       recommendation={recommendation}
-                      onViewDetails={(chipType, gw) => 
-                        console.log('View details clicked for:', chipType, 'GW', gw)
-                      }
+                      onViewDetails={handleViewDetails}
                     />
                   ))}
                 </div>
@@ -228,6 +242,15 @@ export default function Home() {
           </div>
         )}
       </main>
+      
+      {/* Chip Detail Modal */}
+      <ChipDetailModal 
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        recommendation={selectedRecommendation}
+        gameweeks={analysisResult?.gameweeks || []}
+        players={analysisResult?.players || []}
+      />
     </div>
   );
 }

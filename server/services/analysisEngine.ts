@@ -47,7 +47,7 @@ export class AnalysisEngine {
       const recommendations = this.generateRecommendations(players, gameweeks);
       
       const totalValue = players.reduce((sum, player) => sum + player.price, 0);
-      const totalPoints = players.reduce((sum, player) => sum + player.points, 0);
+      const totalPoints = userSquad.entry_history.total_points; // Use team's actual total points
       
       return {
         teamId,
