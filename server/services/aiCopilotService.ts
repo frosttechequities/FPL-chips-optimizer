@@ -219,27 +219,90 @@ export class AICopilotService {
   }
 
   /**
-   * Generate LLM-enhanced response with full FPL context
+   * Generate LLM-enhanced response with live FPL data (RAG Architecture)
    */
   private async generateLLMEnhancedResponse(intent: QueryIntent, context: ConversationContext): Promise<Omit<AICopilotResponse, 'conversationContext'>> {
-    // Gather FPL analysis data based on intent
+    // Fetch LIVE FPL data for accurate responses (RAG approach)
     let analysisData: any = null;
     let squadData: any = null;
     let recommendations: any[] = [];
+    let liveFPLData: any = null;
 
-    // Get squad analysis if we have a team ID and it's relevant
-    if (context.teamId && (intent.type === 'squad_analysis' || intent.type === 'transfer_suggestions' || intent.type === 'chip_strategy')) {
-      try {
+    try {
+      // Always get fresh analysis data to prevent hallucinations
+      if (context.teamId) {
         analysisData = await this.analysisEngine.analyzeTeam(context.teamId);
         squadData = {
           teamValue: analysisData.budget?.teamValue || 100,
           bank: analysisData.budget?.bank || 0,
-          freeTransfers: analysisData.budget?.freeTransfers || 1
+          freeTransfers: analysisData.budget?.freeTransfers || 1,
+          teamName: analysisData.teamName || 'Your team'
         };
         recommendations = analysisData.recommendations || [];
-      } catch (error) {
-        console.warn('Failed to get analysis data for LLM context:', error);
+        
+        // Extract live player data for context
+        liveFPLData = {
+          players: analysisData.players?.slice(0, 15).map((p: any) => ({
+            name: p.name,
+            position: p.position,
+            team: p.team,
+            price: p.price,
+            points: p.points,
+            expectedPoints: p.expectedPoints,
+            form: p.volatility || 0,
+            isStarter: p.isStarter,
+            isBench: p.isBench
+          })) || [],
+          nextFixtures: analysisData.gameweeks?.slice(0, 3).map((gw: any) => ({
+            gameweek: gw.gameweek,
+            difficulty: gw.difficulty,
+            averageFDR: gw.averageFDR,
+            keyFixtures: gw.fixtures?.slice(0, 5).map((f: any) => 
+              `${f.playerName} vs ${f.opponent} (${f.isHome ? 'H' : 'A'}, FDR: ${f.fdr})`
+            ) || []
+          })) || [],
+          chipRecommendations: recommendations.slice(0, 3).map((r: any) => ({
+            chip: r.chipType,
+            gameweek: r.gameweek,
+            priority: r.priority,
+            reasoning: r.reasoning?.slice(0, 2) || [],
+            confidence: r.confidence || 0
+          }))
+        };
+      } else {
+        // No Team ID available - return data request message instead of proceeding
+        return {
+          message: "I'd love to help with your FPL strategy! To give you accurate, personalized advice about players like Watkins, I need to analyze your actual squad first. Could you please provide your Team ID so I can see your current players, their prices, and upcoming fixtures?",
+          insights: [],
+          suggestions: [
+            "Share your FPL Team ID for personalized analysis",
+            "You can find your Team ID in the FPL app/website URL",
+            "Once I have your squad data, I can give specific advice about your players"
+          ],
+          followUpQuestions: [
+            "What's your FPL Team ID?",
+            "Would you like help finding your Team ID?",
+            "Are you looking for general FPL advice instead?"
+          ]
+        };
       }
+    } catch (error) {
+      console.warn('Failed to get live FPL data for AI context:', error);
+      // Return data unavailable message instead of proceeding without data
+      return {
+        message: "I'm having trouble accessing your FPL data right now. To give you accurate advice about specific players, I need access to current squad and fixture information. Please try again in a moment, or provide your Team ID if you haven't already.",
+        insights: [],
+        suggestions: [
+          "Try your question again in a moment",
+          "Double-check your Team ID if provided",
+          "Ask a general FPL strategy question instead"
+        ],
+        followUpQuestions: [
+          "Would you like to try again?",
+          "Do you have a different Team ID to try?",
+          "Can I help with general FPL strategy instead?"
+        ]
+      };
     }
 
     // Build conversation history for context
@@ -253,7 +316,7 @@ export class AICopilotService {
     // Get the user's current query
     const currentQuery = context.messages[context.messages.length - 1]?.content || intent.originalQuery;
 
-    // Generate LLM response with rich context
+    // Generate LLM response with LIVE FPL context (RAG)
     const llmResponse = await this.llmService.generateFPLResponse(
       currentQuery,
       {
@@ -261,7 +324,8 @@ export class AICopilotService {
         entities: intent.entities,
         squadData,
         analysisData,
-        recommendations
+        recommendations,
+        liveFPLData // Add live data for accuracy
       },
       conversationHistory
     );

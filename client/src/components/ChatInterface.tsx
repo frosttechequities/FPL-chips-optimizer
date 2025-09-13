@@ -96,10 +96,7 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
 
       setMessages(prev => [...prev, assistantMessage]);
 
-      // Trigger analysis request if the AI detected a team ID
-      if (response.conversationContext.intent.entities.players && onAnalysisRequest && teamId) {
-        setTimeout(() => onAnalysisRequest(teamId), 1000); // Delayed to let user see the response
-      }
+      // Note: Removed automatic analysis trigger to prevent page reloads after chat responses
     },
     onError: (error) => {
       console.error('Chat error:', error);

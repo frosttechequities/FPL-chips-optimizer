@@ -118,17 +118,18 @@ export class NaturalLanguageProcessor {
       return 'fixture_analysis';
     }
     
-    // Rule 5: Player evaluation in team context - player + "my team" context
-    if (tempEntities.players && tempEntities.players.length > 0 && /my\s+team/i.test(query)) {
+    // Rule 5: Player evaluation - any question about specific players should trigger squad analysis
+    if (tempEntities.players && tempEntities.players.length > 0) {
+      // Questions about specific players should use squad analysis for personalized advice
       return 'squad_analysis';
     }
     
-    // Rule 6: Squad analysis - analyze/review squad/team
+    // Rule 6: Squad analysis - analyze/review squad/team keywords
     if (this.hasSquadAnalysisKeywords(query)) {
       return 'squad_analysis';
     }
     
-    // Rule 7: Default to general advice
+    // Rule 7: Default to general advice only when no specific entities detected
     return 'general_advice';
   }
 
