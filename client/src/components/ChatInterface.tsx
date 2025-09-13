@@ -36,6 +36,8 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
   const [isInitialized, setIsInitialized] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  const [stage, setStage] = useState<'idle' | 'preparing' | 'querying'>('idle');
+  const stageTimer = useRef<number | null>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -76,6 +78,8 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
       return result.data;
     },
     onSuccess: (response) => {
+      // clear stage
+      setStage('idle');
       // Update session ID if new
       if (response.sessionId && !sessionId) {
         setSessionId(response.sessionId);
@@ -100,6 +104,7 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
     },
     onError: (error) => {
       console.error('Chat error:', error);
+      setStage('idle');
       toast({
         title: "Chat Error",
         description: "Sorry, I couldn't process your message. Please try again.",
@@ -126,6 +131,13 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
 
     const messageText = currentMessage.trim();
     setCurrentMessage('');
+    // stage progression
+    setStage('preparing');
+    if (stageTimer.current) {
+      window.clearTimeout(stageTimer.current);
+      stageTimer.current = null;
+    }
+    stageTimer.current = window.setTimeout(() => setStage('querying'), 2000) as unknown as number;
 
     // Add user message immediately
     const userMessage: ChatMessage = {
@@ -248,7 +260,7 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
                   </div>
                   <div className="bg-muted rounded-lg px-3 py-2">
                     <p className="text-sm text-muted-foreground">
-                      AI is analyzing...
+                      {stage === 'preparing' ? 'Preparing context…' : 'Querying model…'}
                     </p>
                   </div>
                 </div>

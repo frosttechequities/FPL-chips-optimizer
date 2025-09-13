@@ -376,6 +376,9 @@ export interface AICopilotResponse {
     intent: QueryIntent;
     responseTime: number;
     modelVersion: string;
+    requestId?: string;
+    nlpMs?: number;
+    llmMs?: number;
   };
 }
 

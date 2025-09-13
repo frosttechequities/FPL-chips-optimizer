@@ -121,6 +121,51 @@ export class OpenRouterService {
   }
 
   /**
+   * Safe completion with timeout + lite fallback messages
+   */
+  async generateCompletionSafe(
+    messages: LLMMessage[],
+    options: {
+      model?: string;
+      maxTokens?: number;
+      temperature?: number;
+      stream?: boolean;
+      timeoutMs?: number;
+      liteFallbackMessages?: LLMMessage[];
+    } = {}
+  ): Promise<string> {
+    const {
+      model = undefined,
+      maxTokens = 1000,
+      temperature = 0.7,
+      stream = false,
+      timeoutMs = 20000,
+      liteFallbackMessages,
+    } = options;
+
+    const callOnce = async (msgs: LLMMessage[]) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await this.generateCompletion(msgs, { model, maxTokens, temperature, stream });
+      } catch (_err) {
+        return '';
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    let content = await callOnce(messages);
+    if (!content && liteFallbackMessages?.length) {
+      content = await callOnce(liteFallbackMessages);
+    }
+    if (!content) {
+      return "I couldn't form a complete answer right now. I can analyze your squad, suggest transfers, or chip timing. Try rephrasing or mention specific players/chips/gameweeks.";
+    }
+    return content;
+  }
+
+  /**
    * Generate an FPL-specific response with enhanced context
    */
   async generateFPLResponse(
@@ -137,6 +182,7 @@ export class OpenRouterService {
   ): Promise<string> {
     // Build a comprehensive system prompt for FPL expertise
     const systemPrompt = this.buildFPLSystemPrompt(fplContext);
+    const litePrompt = this.toLitePrompt(systemPrompt);
     
     // Construct messages with conversation history
     const messages: LLMMessage[] = [
@@ -145,9 +191,15 @@ export class OpenRouterService {
       { role: 'user', content: userQuery }
     ];
 
-    return await this.generateCompletion(messages, {
+    return await this.generateCompletionSafe(messages, {
       temperature: 0.8, // Slightly higher for more creative FPL insights
-      maxTokens: 1200   // Increased limit to prevent truncation
+      maxTokens: 1200,   // Increased limit to prevent truncation
+      timeoutMs: 20000,
+      liteFallbackMessages: [
+        { role: 'system', content: litePrompt },
+        ...conversationHistory.slice(-2),
+        { role: 'user', content: userQuery }
+      ]
     });
   }
 
@@ -284,6 +336,29 @@ Before each response, verify:
 **FINAL INSTRUCTION**: After your reasoning, provide a clear, actionable FPL recommendation. Start your final answer with your recommendation and support it with specific data from above. Be concise but comprehensive - aim for 2-3 paragraphs maximum.`;
 
     return systemPrompt;
+  }
+
+  /**
+   * Create a lite version of the system prompt by trimming long sections and normalizing currency symbols
+   */
+  private toLitePrompt(prompt: string): string {
+    let p = prompt.replace(/\u00A3|A�/g, '£');
+    // Trim starting XI list to first 6 lines under the section
+    p = p.replace(/(### Starting XI:\n)([\s\S]*?)(\n\n### Bench:)/, (m: string, a: string, b: string, c: string) => {
+      const lines = b.trim().split('\n').slice(0, 6).join('\n');
+      return `${a}${lines}${c}`;
+    });
+    // Trim GW fixtures per GW to 3 lines
+    p = p.replace(/(### GW\d+[^\n]*:\n)([\s\S]*?)(?=(\n### GW|\n\n##|$))/g, (m: string, header: string, body: string, next: string) => {
+      const lines = body.trim().split('\n').slice(0, 3).join('\n');
+      return `${header}${lines}${next || ''}`;
+    });
+    // Trim chip recommendations to first one
+    p = p.replace(/(## LIVE Chip Strategy Analysis:\n)([\s\S]*?)(?=\n\n##|$)/, (m: string, hdr: string, body: string) => {
+      const first = body.trim().split('\n').slice(0, 1).join('\n');
+      return `${hdr}${first}`;
+    });
+    return p;
   }
 
   /**

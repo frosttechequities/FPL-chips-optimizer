@@ -59,7 +59,8 @@ export class AICopilotService {
     message: string, 
     sessionId: string, 
     teamId?: string,
-    userId?: string
+    userId?: string,
+    requestId?: string
   ): Promise<AICopilotResponse> {
     const startTime = Date.now();
     
@@ -68,7 +69,9 @@ export class AICopilotService {
       const context = await this.getOrCreateContext(sessionId, teamId, userId);
       
       // Process the natural language query
+      const nlpStart = Date.now();
       const intent = await this.nlProcessor.processQuery(message);
+      const nlpMs = Date.now() - nlpStart;
       
       // Check confidence threshold for clarification (per-intent thresholds)
       const getConfidenceThreshold = (intentType: string): number => {
@@ -122,7 +125,9 @@ export class AICopilotService {
       context.messages.push(userMessage);
       
       // Generate response based on intent
+      const llmStart = Date.now();
       const response = await this.generateResponse(intent, context);
+      const llmMs = Date.now() - llmStart;
       
       // Add assistant response to conversation history
       const assistantMessage: ChatMessage = {
@@ -143,12 +148,15 @@ export class AICopilotService {
       
       return {
         ...response,
-        conversationContext: {
-          intent,
-          responseTime: Date.now() - startTime,
-          modelVersion: 'ai-copilot-v3.0'
-        }
-      };
+          conversationContext: {
+            intent,
+            responseTime: Date.now() - startTime,
+            modelVersion: 'ai-copilot-v3.0',
+            requestId,
+            nlpMs,
+            llmMs
+          }
+        };
       
     } catch (error) {
       console.error('AI Copilot processing error:', error);

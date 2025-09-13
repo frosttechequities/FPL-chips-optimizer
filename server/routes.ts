@@ -227,6 +227,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Generate session ID if not provided
       const sessionId = validatedData.sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
       
       console.log(`Processing chat message for session ${sessionId}...`);
       
@@ -235,7 +236,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         validatedData.message,
         sessionId,
         validatedData.teamId,
-        validatedData.userId
+        validatedData.userId,
+        requestId
       );
       
       console.log(`Chat response generated (${response.conversationContext.responseTime}ms)`);
@@ -244,7 +246,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: true,
         data: {
           ...response,
-          sessionId // Include session ID in response
+          sessionId, // Include session ID in response
+          requestId
         }
       });
       
