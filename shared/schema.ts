@@ -42,6 +42,8 @@ export interface FPLUserPick {
   multiplier: number; // captain multiplier
   is_captain: boolean;
   is_vice_captain: boolean;
+  purchase_price: number; // Price bought at in tenths of millions
+  selling_price: number; // Current selling price in tenths of millions
 }
 
 export interface FPLUserSquad {
@@ -71,6 +73,11 @@ export interface ProcessedPlayer {
   price: number; // in millions
   points: number;
   teamId: number;
+  sellPrice?: number; // Selling price in millions if owned
+  purchasePrice?: number; // Purchase price in millions if owned
+  isBench?: boolean; // Whether player is on bench
+  isStarter?: boolean; // Whether player is in starting XI
+  expectedPoints?: number; // Expected points over analysis window
 }
 
 export interface GameweekFDR {
@@ -99,6 +106,53 @@ export interface ChipRecommendation {
   confidence: number;
 }
 
+// Transfer Planning Types
+export interface TransferTarget {
+  playerId: number;
+  name: string;
+  position: 'GK' | 'DEF' | 'MID' | 'FWD';
+  teamId: number;
+  teamName: string;
+  price: number; // in millions
+  expectedPoints: number;
+  reason: string;
+}
+
+export interface TransferMove {
+  outPlayerId: number;
+  outPlayerName: string;
+  inPlayerId: number;
+  inPlayerName: string;
+  cost: number; // Transfer cost (0 for free, 4 for hit)
+  netCost: number; // Net spend after selling player
+  expectedGain: number; // Expected point gain
+}
+
+export interface TransferPlan {
+  gameweek: number;
+  chipContext?: ChipType;
+  moves: TransferMove[];
+  totalHits: number;
+  totalCost: number; // Total points cost from hits
+  budgetAfter: number; // Remaining budget after transfers
+  projectedGain: number; // Total expected points gain
+  confidence: number; // Confidence score 0-100
+  notes: string[];
+  feasible: boolean; // Whether plan is within budget/transfer constraints
+}
+
+export interface BudgetAnalysis {
+  bank: number; // Money in bank (millions)
+  teamValue: number; // Total team value (millions)
+  freeTransfers: number; // Available free transfers
+  nextDeadline: string; // Next transfer deadline
+  canAfford: {
+    maxPlayerPrice: number; // Most expensive player affordable
+    benchUpgrades: TransferTarget[]; // Affordable bench improvements
+    starterUpgrades: TransferTarget[]; // Affordable starting XI improvements
+  };
+}
+
 export interface AnalysisResult {
   teamId: string;
   teamName: string;
@@ -107,6 +161,8 @@ export interface AnalysisResult {
   totalPoints: number;
   gameweeks: GameweekFDR[];
   recommendations: ChipRecommendation[];
+  budget: BudgetAnalysis;
+  transferPlans?: TransferPlan[];
   lastUpdated: string;
 }
 
@@ -118,6 +174,48 @@ export const analyzeTeamRequestSchema = z.object({
 });
 
 export type AnalyzeTeamRequest = z.infer<typeof analyzeTeamRequestSchema>;
+
+// Transfer Planning Request/Response Schemas
+export const planTransfersRequestSchema = z.object({
+  teamId: z.string().regex(/^\d+$/, "Team ID must be a number")
+    .transform(val => parseInt(val))
+    .refine(val => val > 0 && val <= 99999999, "Invalid team ID range"),
+  targetGameweek: z.number().optional(),
+  chipType: z.enum(['wildcard', 'bench-boost', 'triple-captain', 'free-hit']).optional(),
+  maxHits: z.number().min(0).max(10).default(2),
+  includeRiskyMoves: z.boolean().default(false)
+});
+
+export type PlanTransfersRequest = z.infer<typeof planTransfersRequestSchema>;
+
+export const planTransfersResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.object({
+    plans: z.array(z.object({
+      gameweek: z.number(),
+      chipContext: z.enum(['wildcard', 'bench-boost', 'triple-captain', 'free-hit']).optional(),
+      moves: z.array(z.object({
+        outPlayerId: z.number(),
+        outPlayerName: z.string(),
+        inPlayerId: z.number(),
+        inPlayerName: z.string(),
+        cost: z.number(),
+        netCost: z.number(),
+        expectedGain: z.number()
+      })),
+      totalHits: z.number(),
+      totalCost: z.number(),
+      budgetAfter: z.number(),
+      projectedGain: z.number(),
+      confidence: z.number(),
+      notes: z.array(z.string()),
+      feasible: z.boolean()
+    }))
+  }).optional(),
+  error: z.string().optional()
+});
+
+export type PlanTransfersResponse = z.infer<typeof planTransfersResponseSchema>;
 
 export const analyzeTeamResponseSchema = z.object({
   success: z.boolean(),
@@ -131,7 +229,12 @@ export const analyzeTeamResponseSchema = z.object({
       team: z.string(),
       price: z.number(),
       points: z.number(),
-      teamId: z.number()
+      teamId: z.number(),
+      sellPrice: z.number().optional(),
+      purchasePrice: z.number().optional(),
+      isBench: z.boolean().optional(),
+      isStarter: z.boolean().optional(),
+      expectedPoints: z.number().optional()
     })),
     totalValue: z.number(),
     totalPoints: z.number(),
@@ -157,6 +260,55 @@ export const analyzeTeamResponseSchema = z.object({
       reasoning: z.array(z.string()),
       confidence: z.number()
     })),
+    budget: z.object({
+      bank: z.number(),
+      teamValue: z.number(),
+      freeTransfers: z.number(),
+      nextDeadline: z.string(),
+      canAfford: z.object({
+        maxPlayerPrice: z.number(),
+        benchUpgrades: z.array(z.object({
+          playerId: z.number(),
+          name: z.string(),
+          position: z.enum(['GK', 'DEF', 'MID', 'FWD']),
+          teamId: z.number(),
+          teamName: z.string(),
+          price: z.number(),
+          expectedPoints: z.number(),
+          reason: z.string()
+        })),
+        starterUpgrades: z.array(z.object({
+          playerId: z.number(),
+          name: z.string(),
+          position: z.enum(['GK', 'DEF', 'MID', 'FWD']),
+          teamId: z.number(),
+          teamName: z.string(),
+          price: z.number(),
+          expectedPoints: z.number(),
+          reason: z.string()
+        }))
+      })
+    }),
+    transferPlans: z.array(z.object({
+      gameweek: z.number(),
+      chipContext: z.enum(['wildcard', 'bench-boost', 'triple-captain', 'free-hit']).optional(),
+      moves: z.array(z.object({
+        outPlayerId: z.number(),
+        outPlayerName: z.string(),
+        inPlayerId: z.number(),
+        inPlayerName: z.string(),
+        cost: z.number(),
+        netCost: z.number(),
+        expectedGain: z.number()
+      })),
+      totalHits: z.number(),
+      totalCost: z.number(),
+      budgetAfter: z.number(),
+      projectedGain: z.number(),
+      confidence: z.number(),
+      notes: z.array(z.string()),
+      feasible: z.boolean()
+    })).optional(),
     lastUpdated: z.string()
   }).optional(),
   error: z.string().optional()
