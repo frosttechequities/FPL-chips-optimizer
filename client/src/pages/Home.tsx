@@ -5,12 +5,20 @@ import ChipRecommendationCard from "@/components/ChipRecommendationCard";
 import ChipDetailModal from "@/components/ChipDetailModal";
 import SquadOverview from "@/components/SquadOverview";
 import FixtureDifficultyChart from "@/components/FixtureDifficultyChart";
+import TransferPlanner from "@/components/TransferPlanner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { type AnalyzeTeamResponse, type AnalysisResult, type ChipRecommendation } from "@shared/schema";
+import { 
+  type AnalyzeTeamResponse, 
+  type AnalysisResult, 
+  type ChipRecommendation,
+  type PlanTransfersResponse,
+  type TransferPlan
+} from "@shared/schema";
 
 
 type AppState = 'input' | 'loading' | 'results' | 'error';
@@ -22,6 +30,8 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedRecommendation, setSelectedRecommendation] = useState<ChipRecommendation | null>(null);
+  const [transferPlans, setTransferPlans] = useState<TransferPlan[] | null>(null);
+  const [activeTab, setActiveTab] = useState('analysis');
 
   const analyzeMutation = useMutation({
     mutationFn: async (teamId: string) => {
@@ -31,6 +41,7 @@ export default function Home() {
     onSuccess: (data) => {
       if (data.success && data.data) {
         setAnalysisResult(data.data);
+        setTransferPlans(null); // Reset transfer plans when new analysis comes in
         setAppState('results');
         console.log('Analysis complete for team:', teamId);
       } else {
@@ -42,6 +53,28 @@ export default function Home() {
       console.error('Analysis error:', error);
       setErrorMessage(error instanceof Error ? error.message : 'Failed to analyze team');
       setAppState('error');
+    }
+  });
+
+  const transferPlanMutation = useMutation({
+    mutationFn: async (params: { teamId: string; chipType?: string; maxHits?: number }) => {
+      const requestData: any = { teamId: params.teamId };
+      if (params.chipType) requestData.chipType = params.chipType;
+      if (params.maxHits !== undefined) requestData.maxHits = params.maxHits;
+      
+      const response = await apiRequest('POST', '/api/transfer-plan', requestData);
+      return (await response.json()) as PlanTransfersResponse;
+    },
+    onSuccess: (data) => {
+      if (data.success && data.data) {
+        setTransferPlans(data.data.plans);
+        console.log('Transfer plans generated:', data.data.plans.length);
+      } else {
+        console.error('Transfer planning failed:', data.error);
+      }
+    },
+    onError: (error) => {
+      console.error('Transfer planning error:', error);
     }
   });
 
@@ -80,6 +113,17 @@ export default function Home() {
       setSelectedRecommendation(recommendation);
       setIsModalOpen(true);
     }
+  };
+
+  const handlePlanTransfers = (params: { chipType?: string; maxHits?: number }) => {
+    if (!teamId || !analysisResult) return;
+    
+    setActiveTab('transfers'); // Switch to transfers tab
+    transferPlanMutation.mutate({
+      teamId,
+      chipType: params.chipType,
+      maxHits: params.maxHits
+    });
   };
 
   return (
