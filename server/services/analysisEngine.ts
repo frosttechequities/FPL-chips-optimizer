@@ -7,9 +7,12 @@ import {
   type FPLTeam,
   type FPLFixture,
   type FPLUserSquad,
-  type ChipType
+  type ChipType,
+  type BudgetAnalysis,
+  type TransferTarget
 } from "@shared/schema";
 import { FPLApiService } from './fplApi';
+import { TransferEngine } from './transferEngine';
 
 const POSITION_MAP: Record<number, 'GK' | 'DEF' | 'MID' | 'FWD'> = {
   1: 'GK',
@@ -20,9 +23,11 @@ const POSITION_MAP: Record<number, 'GK' | 'DEF' | 'MID' | 'FWD'> = {
 
 export class AnalysisEngine {
   private fplApi: FPLApiService;
+  private transferEngine: TransferEngine;
 
   constructor() {
     this.fplApi = FPLApiService.getInstance();
+    this.transferEngine = new TransferEngine();
   }
 
   async analyzeTeam(teamId: string): Promise<AnalysisResult> {
@@ -30,14 +35,16 @@ export class AnalysisEngine {
       const managerId = parseInt(teamId);
       
       // Fetch all required data in parallel
-      const [bootstrap, userSquad, userInfo, fixtures] = await Promise.all([
+      const [bootstrap, userSquad, userInfo, fixtures, freeTransfers, nextDeadline] = await Promise.all([
         this.fplApi.getBootstrapData(),
         this.fplApi.getUserSquad(managerId),
         this.fplApi.getUserInfo(managerId),
-        this.fplApi.getUpcomingFixtures(15)
+        this.fplApi.getUpcomingFixtures(15),
+        this.fplApi.computeFreeTransfers(managerId),
+        this.fplApi.getNextDeadline()
       ]);
 
-      // Process players
+      // Process players with enhanced data
       const players = this.processPlayers(userSquad, bootstrap.elements, bootstrap.teams);
       
       // Calculate gameweek FDRs
@@ -46,17 +53,23 @@ export class AnalysisEngine {
       // Generate chip recommendations
       const recommendations = this.generateRecommendations(players, gameweeks);
       
-      const totalValue = players.reduce((sum, player) => sum + player.price, 0);
+      // Create budget analysis
+      const budget = await this.createBudgetAnalysis(
+        userSquad, bootstrap.elements, bootstrap.teams, freeTransfers, nextDeadline
+      );
+      
+      const totalValue = Math.round(userSquad.entry_history.value / 10 * 10) / 10; // Use FPL team value
       const totalPoints = userSquad.entry_history.total_points; // Use team's actual total points
       
       return {
         teamId,
         teamName: userInfo.name || `${userInfo.player_first_name} ${userInfo.player_last_name}`.trim() || 'Unknown Team',
         players,
-        totalValue: Math.round(totalValue * 10) / 10, // Round to 1 decimal
+        totalValue,
         totalPoints,
         gameweeks,
         recommendations,
+        budget,
         lastUpdated: new Date().toISOString()
       };
     } catch (error) {
@@ -81,9 +94,111 @@ export class AnalysisEngine {
         team: team.short_name,
         price: player.now_cost / 10, // Convert from tenths to actual millions
         points: player.total_points,
-        teamId: player.team
+        teamId: player.team,
+        sellPrice: (pick.selling_price || player.now_cost) / 10, // Selling price in millions
+        purchasePrice: (pick.purchase_price || player.now_cost) / 10, // Purchase price in millions
+        isBench: pick.position > 11, // Positions 12-15 are bench
+        isStarter: pick.position <= 11, // Positions 1-11 are starting XI
+        expectedPoints: player.total_points / Math.max(1, 10) * 5 // Simple expected points over 5 GWs
       };
     });
+  }
+
+  private async createBudgetAnalysis(
+    userSquad: FPLUserSquad,
+    allPlayers: FPLPlayer[],
+    teams: FPLTeam[],
+    freeTransfers: number,
+    nextDeadline: string
+  ): Promise<BudgetAnalysis> {
+    const bank = userSquad.entry_history.bank / 10; // Convert from tenths to millions
+    const teamValue = userSquad.entry_history.value / 10; // Convert from tenths to millions
+    
+    // Find current squad compositions
+    const currentSquad = userSquad.picks.map(pick => {
+      const player = allPlayers.find(p => p.id === pick.element);
+      return {
+        ...pick,
+        player,
+        sellPrice: (pick.selling_price || player?.now_cost || 0) / 10
+      };
+    });
+
+    const benchPlayers = currentSquad.filter(p => p.position > 11);
+    const starterPlayers = currentSquad.filter(p => p.position <= 11);
+    
+    // Calculate maximum affordable player price
+    const maxSellValue = Math.max(...currentSquad.map(p => p.sellPrice));
+    const maxPlayerPrice = bank + maxSellValue;
+    
+    // Find affordable upgrades for bench
+    const benchUpgrades: TransferTarget[] = [];
+    for (const benchPlayer of benchPlayers.slice(0, 3)) { // Top 3 bench improvements
+      if (!benchPlayer.player) continue;
+      
+      const position = POSITION_MAP[benchPlayer.player.element_type];
+      const budget = bank + benchPlayer.sellPrice;
+      
+      const upgrade = allPlayers
+        .filter(p => POSITION_MAP[p.element_type] === position)
+        .filter(p => p.now_cost / 10 <= budget)
+        .filter(p => p.id !== benchPlayer.element)
+        .sort((a, b) => b.total_points - a.total_points)[0];
+        
+      if (upgrade) {
+        benchUpgrades.push({
+          playerId: upgrade.id,
+          name: upgrade.web_name,
+          position,
+          teamId: upgrade.team,
+          teamName: teams.find(t => t.id === upgrade.team)?.short_name || 'Unknown',
+          price: upgrade.now_cost / 10,
+          expectedPoints: upgrade.total_points / Math.max(1, 10) * 5,
+          reason: `Upgrade from ${benchPlayer.player.web_name} - better fixtures ahead`
+        });
+      }
+    }
+    
+    // Find affordable upgrades for starters
+    const starterUpgrades: TransferTarget[] = [];
+    for (const starterPlayer of starterPlayers.slice(0, 3)) { // Top 3 starter improvements
+      if (!starterPlayer.player) continue;
+      
+      const position = POSITION_MAP[starterPlayer.player.element_type];
+      const budget = bank + starterPlayer.sellPrice;
+      
+      const upgrade = allPlayers
+        .filter(p => POSITION_MAP[p.element_type] === position)
+        .filter(p => p.now_cost / 10 <= budget)
+        .filter(p => p.id !== starterPlayer.element)
+        .filter(p => p.total_points > starterPlayer.player!.total_points)
+        .sort((a, b) => b.total_points - a.total_points)[0];
+        
+      if (upgrade) {
+        starterUpgrades.push({
+          playerId: upgrade.id,
+          name: upgrade.web_name,
+          position,
+          teamId: upgrade.team,
+          teamName: teams.find(t => t.id === upgrade.team)?.short_name || 'Unknown',
+          price: upgrade.now_cost / 10,
+          expectedPoints: upgrade.total_points / Math.max(1, 10) * 5,
+          reason: `Significant upgrade from ${starterPlayer.player.web_name} - premium option`
+        });
+      }
+    }
+
+    return {
+      bank,
+      teamValue,
+      freeTransfers,
+      nextDeadline,
+      canAfford: {
+        maxPlayerPrice,
+        benchUpgrades: benchUpgrades.slice(0, 5),
+        starterUpgrades: starterUpgrades.slice(0, 5)
+      }
+    };
   }
 
   private calculateGameweekFDRs(players: ProcessedPlayer[], fixtures: FPLFixture[], teams: FPLTeam[]): GameweekFDR[] {
