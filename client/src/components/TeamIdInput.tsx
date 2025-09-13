@@ -16,17 +16,23 @@ export default function TeamIdInput({ onAnalyze, isLoading = false }: TeamIdInpu
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!teamId.trim()) {
+    const trimmedId = teamId.trim();
+    if (!trimmedId) {
       setError("Please enter your FPL Team ID");
       return;
     }
-    if (!/^\d+$/.test(teamId.trim())) {
+    if (!/^\d+$/.test(trimmedId)) {
       setError("Team ID must be a number");
       return;
     }
+    const numericId = parseInt(trimmedId);
+    if (numericId < 1 || numericId > 99999999) {
+      setError("Please enter a valid FPL Team ID");
+      return;
+    }
     setError("");
-    onAnalyze(teamId.trim());
-    console.log('Team ID analysis triggered:', teamId.trim());
+    onAnalyze(trimmedId);
+    console.log('Team ID analysis triggered:', trimmedId);
   };
 
   return (
