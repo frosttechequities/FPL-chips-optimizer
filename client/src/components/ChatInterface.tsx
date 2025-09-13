@@ -69,7 +69,11 @@ export function ChatInterface({ teamId, onAnalysisRequest, className }: ChatInte
         teamId,
         userId: undefined // Could be added for user tracking
       });
-      return await response.json();
+      const result = await response.json();
+      if (!result.success) {
+        throw new Error(result.error || 'Chat request failed');
+      }
+      return result.data;
     },
     onSuccess: (response) => {
       // Update session ID if new

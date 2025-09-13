@@ -17,6 +17,7 @@ Default port is `5000` (configurable via `PORT`).
 
 - `PORT` (optional): HTTP port. Defaults to `5000`.
 - `DATABASE_URL` (optional): Only required if using Drizzle Kit migrations (not required for runtime).
+- `OPENROUTER_API_KEY` (optional): Required for enhanced LLM responses via OpenRouter's Qwen3 Coder model. System gracefully falls back to static responses if not configured.
 
 ## API Reference
 
@@ -89,6 +90,7 @@ Base URL is the same as the client (the Express server serves both).
   - `services/competitiveIntelligenceEngine.ts`: Phase 2 - Rival analysis and strategic insights.
   - `services/naturalLanguageProcessor.ts`: Phase 3 - NLP for FPL query understanding.
   - `services/aiCopilotService.ts`: Phase 3 - Conversational AI with FPL domain expertise.
+  - `services/openRouterService.ts`: Phase 3+ - LLM integration using OpenRouter's Qwen3 Coder model.
   - `storage.ts`: In-memory caches for analysis and FPL objects.
   - `vite.ts`: Dev HMR and production file serving.
 - `client/`
@@ -114,10 +116,12 @@ Base URL is the same as the client (the Express server serves both).
 
 **AI Co-pilot Tab:**
    - Conversational chat interface with FPL terminology understanding
+   - LLM-powered intelligent responses via OpenRouter's Qwen3 Coder model
    - Context-aware responses based on your squad and analysis
    - Structured AI insights with reasoning and action items
    - Follow-up questions to guide strategic discussions
    - Session persistence for continuous conversations
+   - Graceful fallback to static responses when LLM unavailable
 
 **Transfer Planner Tab:**
    - Budget analysis and transfer planning tools
@@ -132,6 +136,8 @@ Base URL is the same as the client (the Express server serves both).
 - Hybrid intelligence architecture combining statistical simulations, ML predictions, and conversational AI.
 - Provider pattern for data services with mock/real implementations for development flexibility.
 - In-memory session management for AI conversations with automatic cleanup.
+- LLM integration with OpenRouter using Qwen3 Coder model for enhanced conversational responses.
+- Graceful fallback system ensuring functionality even when LLM services are unavailable.
 
 ## Implementation Status
 
@@ -156,6 +162,14 @@ Base URL is the same as the client (the Express server serves both).
 - ✅ Context-aware conversation management with session persistence
 - ✅ Structured AI insights with reasoning and actionable recommendations
 - ✅ Chat interface with message history and follow-up suggestions
+
+### Phase 3+: LLM Integration & Enhanced Intelligence ✅ COMPLETED
+- ✅ OpenRouter integration with Qwen3 Coder model for intelligent responses
+- ✅ Hybrid response system: LLM-enhanced with graceful fallback to static responses
+- ✅ Rich context assembly: passes squad data, analysis results, and conversation history to LLM
+- ✅ Dynamic suggestion and follow-up question generation based on user intent
+- ✅ Robust error handling and credit/quota management for LLM services
+- ✅ Enhanced conversational capabilities with deep FPL domain understanding
 
 ## Next Development Priorities
 
