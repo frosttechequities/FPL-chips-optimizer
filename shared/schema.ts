@@ -64,6 +64,331 @@ export interface FPLUserSquad {
   picks: FPLUserPick[];
 }
 
+// Enhanced Phase 1 Types for Advanced Analytics
+
+// Bookmaker odds for fixtures
+export interface MatchOdds {
+  fixtureId: number;
+  homeWin: number; // decimal odds
+  draw: number;
+  awayWin: number;
+  btts: number; // both teams to score
+  over25Goals: number; // over 2.5 goals
+  under25Goals: number; // under 2.5 goals
+  homeCleanSheet: number; // home team clean sheet
+  awayCleanSheet: number; // away team clean sheet
+  homeGoalsOver15: number; // home team over 1.5 goals
+  awayGoalsOver15: number; // away team over 1.5 goals
+  lastUpdated: string;
+}
+
+// Team strength metrics derived from odds and advanced stats
+export interface TeamStrength {
+  teamId: number;
+  attack: number; // attacking strength (0-100)
+  defense: number; // defensive strength (0-100)
+  xGFor: number; // expected goals for (per game)
+  xGAgainst: number; // expected goals against (per game)
+  homeAdvantage: number; // home advantage factor (0.8-1.2)
+  form: number; // recent form (0-100)
+  lastUpdated: string;
+}
+
+// Advanced player statistics
+export interface PlayerAdvanced {
+  playerId: number;
+  xG: number; // expected goals
+  xA: number; // expected assists
+  xMins: number; // expected minutes (proxy for rotation risk)
+  role: 'nailed' | 'rotation' | 'benchwarmer'; // playing time confidence
+  volatility: number; // points standard deviation 
+  formTrend: 'rising' | 'stable' | 'declining'; // recent performance trend
+  fixtureAdjustedXG: number; // xG adjusted for upcoming fixtures
+  fixtureAdjustedXA: number; // xA adjusted for upcoming fixtures
+  lastUpdated: string;
+}
+
+// Monte Carlo simulation results for individual players
+export interface PlayerSimOutcome {
+  playerId: number;
+  gameweeksSimulated: number;
+  meanPoints: number;
+  p10: number; // 10th percentile outcome
+  p50: number; // median outcome
+  p90: number; // 90th percentile outcome
+  standardDeviation: number;
+  haulsCount: number; // number of >10pt hauls in simulation
+  blankCount: number; // number of 0-2pt blanks in simulation
+  bestGameweek: number; // gameweek with highest expected return
+  worstGameweek: number; // gameweek with lowest expected return
+  confidence: number; // confidence in prediction (0-100)
+}
+
+// Simulation summary for the entire squad or chip strategy
+export interface SimulationSummary {
+  strategy: string; // e.g., "bench-boost-gw8", "current-squad"
+  runs: number; // number of simulation runs
+  gameweeksAnalyzed: number[];
+  
+  // Overall outcomes
+  meanTotalPoints: number;
+  p10TotalPoints: number; // conservative outcome
+  p90TotalPoints: number; // optimistic outcome
+  
+  // Chip-specific metrics
+  successRate: number; // % of simulations above target
+  boomRate: number; // % of simulations with exceptional returns (>20% above mean)
+  bustRate: number; // % of simulations below disappointing threshold
+  
+  // Risk assessment
+  variance: number;
+  confidenceInterval: [number, number]; // 80% confidence interval
+  recommendationStrength: 'strong' | 'moderate' | 'weak';
+  
+  lastUpdated: string;
+}
+
+// Enhanced Phase 2: Machine Learning and Competitive Intelligence Types
+
+// Machine learning prediction for individual players
+export interface MLPrediction {
+  playerId: number;
+  predictedPoints: number;
+  confidence: number; // 0-100 confidence in prediction
+  modelVersion: string;
+  features: {
+    form: number; // recent form factor
+    fixtures: number; // fixture difficulty weighting
+    price: number; // price performance factor
+    ownership: number; // ownership impact
+    historical: number; // historical performance factor
+  };
+  riskFactors: {
+    injuryRisk: number; // 0-1 probability of injury
+    rotationRisk: number; // 0-1 probability of rotation
+    priceDrop: number; // 0-1 probability of price decline
+  };
+  lastUpdated: string;
+}
+
+// Analysis of rival manager strategies
+export interface RivalAnalysis {
+  managerId: string;
+  managerName: string;
+  overallRank: number;
+  gameweekRank: number;
+  totalPoints: number;
+  transfers: {
+    playersIn: Array<{
+      playerId: number;
+      playerName: string;
+      gameweek: number;
+      reason: 'popular_pick' | 'differential' | 'fixture_swing' | 'price_rise';
+    }>;
+    playersOut: Array<{
+      playerId: number;
+      playerName: string;
+      gameweek: number;
+      reason: 'injury' | 'rotation' | 'fixture_swing' | 'price_drop';
+    }>;
+  };
+  strategy: 'template' | 'differential' | 'balanced' | 'contrarian';
+  chipsUsed: Array<{
+    chip: 'wildcard' | 'bench-boost' | 'triple-captain' | 'free-hit';
+    gameweek: number;
+    success: boolean;
+    points: number;
+  }>;
+  lastUpdated: string;
+}
+
+// Competitive intelligence data about meta trends
+export interface CompetitiveIntelligence {
+  metaTrends: {
+    popularPicks: Array<{
+      playerId: number;
+      playerName: string;
+      ownership: number;
+      trend: 'rising' | 'falling' | 'stable';
+      differential: boolean;
+    }>;
+    emergingPlayers: Array<{
+      playerId: number;
+      playerName: string;
+      ownershipGrowth: number;
+      reasons: string[];
+    }>;
+  };
+  rivalInsights: {
+    topManagerMoves: RivalAnalysis[];
+    commonStrategies: string[];
+    chipUsagePatterns: Array<{
+      chip: string;
+      optimalGameweeks: number[];
+      averageReturn: number;
+    }>;
+  };
+  marketInefficiencies: Array<{
+    playerId: number;
+    playerName: string;
+    expectedVsActualOwnership: number;
+    opportunity: 'undervalued' | 'overvalued';
+    confidence: number;
+  }>;
+  lastUpdated: string;
+}
+
+// ML model performance tracking
+export interface MLModelPerformance {
+  modelId: string;
+  modelType: 'regression' | 'classification' | 'ensemble';
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1Score: number;
+  lastTrained: string;
+  trainingDataSize: number;
+  features: string[];
+  validationResults: {
+    meanAbsoluteError: number;
+    rootMeanSquareError: number;
+    r2Score: number;
+  };
+}
+
+// Historical player performance data for ML training
+export interface HistoricalPlayerData {
+  playerId: number;
+  playerName: string;
+  season: string;
+  gameweeks: Array<{
+    gameweek: number;
+    points: number;
+    minutes: number;
+    goals: number;
+    assists: number;
+    cleanSheets: number;
+    saves: number;
+    penalties: number;
+    yellowCards: number;
+    redCards: number;
+    ownGoals: number;
+    price: number;
+    ownership: number;
+    captaincy: number;
+    fixture: {
+      opponent: string;
+      isHome: boolean;
+      difficulty: number;
+    };
+  }>;
+  aggregatedStats: {
+    totalPoints: number;
+    avgPointsPerGame: number;
+    pointsPerMillion: number;
+    volatility: number;
+    consistency: number;
+  };
+}
+
+// Enhanced Phase 3: AI Co-pilot and Natural Language Processing Types
+
+// Natural language query and response for AI co-pilot
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: {
+    queryType?: 'analysis' | 'strategy' | 'transfers' | 'general';
+    confidence?: number;
+    processingTime?: number;
+    analysisData?: any; // References to analysis results if applicable
+  };
+}
+
+// Conversation context for maintaining chat history and user preferences
+export interface ConversationContext {
+  sessionId: string;
+  userId?: string;
+  teamId?: string;
+  messages: ChatMessage[];
+  userPreferences: {
+    riskTolerance: 'conservative' | 'balanced' | 'aggressive';
+    strategyType: 'template' | 'differential' | 'balanced' | 'contrarian';
+    priorityChips: string[];
+    budget?: number;
+  };
+  currentAnalysis?: {
+    teamData?: any;
+    lastAnalyzed?: string;
+    activeChips?: string[];
+  };
+  lastUpdated: string;
+}
+
+// Structured intent recognition from natural language queries
+export interface QueryIntent {
+  type: 'squad_analysis' | 'chip_strategy' | 'transfer_suggestions' | 'player_comparison' | 'fixture_analysis' | 'general_advice';
+  entities: {
+    players?: string[];
+    teams?: string[];
+    gameweeks?: number[];
+    chips?: string[];
+    positions?: string[];
+    budget?: number;
+  };
+  confidence: number;
+  originalQuery: string;
+  processedQuery: string;
+}
+
+// AI-generated strategic insights and recommendations
+export interface AIInsight {
+  type: 'recommendation' | 'warning' | 'opportunity' | 'explanation';
+  title: string;
+  content: string;
+  priority: 'high' | 'medium' | 'low';
+  confidence: number;
+  reasoning: string[];
+  actionItems?: string[];
+  relatedData?: {
+    players?: number[];
+    gameweeks?: number[];
+    expectedPoints?: number;
+    riskLevel?: 'low' | 'medium' | 'high';
+  };
+  lastUpdated: string;
+}
+
+// Comprehensive AI co-pilot response
+export interface AICopilotResponse {
+  message: string;
+  insights: AIInsight[];
+  suggestions: string[];
+  followUpQuestions: string[];
+  analysisPerformed?: {
+    type: string;
+    confidence: number;
+    dataUsed: string[];
+  };
+  conversationContext: {
+    intent: QueryIntent;
+    responseTime: number;
+    modelVersion: string;
+  };
+}
+
+// FPL knowledge base entry for AI understanding
+export interface FPLConcept {
+  term: string;
+  category: 'rule' | 'strategy' | 'statistic' | 'terminology';
+  definition: string;
+  examples: string[];
+  relatedTerms: string[];
+  strategicImportance: number; // 1-10 scale
+}
+
 // Analysis Types
 export interface ProcessedPlayer {
   id: number;
@@ -78,6 +403,14 @@ export interface ProcessedPlayer {
   isBench?: boolean; // Whether player is on bench
   isStarter?: boolean; // Whether player is in starting XI
   expectedPoints?: number; // Expected points over analysis window
+  
+  // Enhanced Phase 1 data
+  volatility?: number; // Standard deviation of points (explosiveness metric)
+  advancedStats?: PlayerAdvanced; // Advanced statistics
+  simOutcome?: PlayerSimOutcome; // Monte Carlo simulation results
+  
+  // Enhanced Phase 2: Machine Learning data
+  mlPrediction?: MLPrediction; // ML prediction for this player
 }
 
 export interface GameweekFDR {
@@ -104,6 +437,11 @@ export interface ChipRecommendation {
   description: string;
   reasoning: string[];
   confidence: number;
+  
+  // Enhanced Phase 1 data
+  expectedPointsRange?: [number, number]; // [min, max] expected points from simulation
+  successProbability?: number; // Probability of achieving target outcome
+  alternativeWindows?: number[]; // Other viable gameweeks for this chip
 }
 
 // Transfer Planning Types
@@ -164,6 +502,28 @@ export interface AnalysisResult {
   budget: BudgetAnalysis;
   transferPlans?: TransferPlan[];
   lastUpdated: string;
+  
+  // Enhanced Phase 1 data
+  simulationSummary?: SimulationSummary; // Overall squad simulation results
+  expectedPointsSource?: 'fdr' | 'odds' | 'advanced-stats' | 'simulation'; // Data source for EP calculations
+  confidenceLevel?: number; // Overall confidence in analysis (0-100)
+  dataFreshness?: {
+    odds: string; // timestamp of last odds update
+    stats: string; // timestamp of last stats update
+    fpl: string; // timestamp of last FPL data update
+    ml?: string; // timestamp of last ML predictions update (Phase 2)
+    competitiveIntelligence?: string; // timestamp of last competitive intelligence update (Phase 2)
+  };
+  
+  // Enhanced Phase 2: Machine Learning and Competitive Intelligence
+  mlPredictions?: MLPrediction[]; // ML predictions for each player
+  competitiveIntelligence?: CompetitiveIntelligence; // Market trends and rival insights
+  strategicRecommendations?: Array<{
+    type: 'template' | 'differential' | 'contrarian' | 'balanced';
+    description: string;
+    confidence: number;
+    recommendations: string[];
+  }>;
 }
 
 // Request/Response Schemas
@@ -187,6 +547,16 @@ export const planTransfersRequestSchema = z.object({
 });
 
 export type PlanTransfersRequest = z.infer<typeof planTransfersRequestSchema>;
+
+// Enhanced Phase 3: AI Co-pilot API schemas
+export const chatRequestSchema = z.object({
+  message: z.string().min(1).max(1000),
+  sessionId: z.string().optional(),
+  teamId: z.string().optional(),
+  userId: z.string().optional()
+});
+
+export type ChatRequest = z.infer<typeof chatRequestSchema>;
 
 export const planTransfersResponseSchema = z.object({
   success: z.boolean(),
@@ -234,7 +604,22 @@ export const analyzeTeamResponseSchema = z.object({
       purchasePrice: z.number().optional(),
       isBench: z.boolean().optional(),
       isStarter: z.boolean().optional(),
-      expectedPoints: z.number().optional()
+      expectedPoints: z.number().optional(),
+      
+      // Enhanced Phase 1 data
+      volatility: z.number().optional(),
+      advancedStats: z.object({
+        playerId: z.number(),
+        xG: z.number(),
+        xA: z.number(),
+        xMins: z.number(),
+        role: z.enum(['nailed', 'rotation', 'benchwarmer']),
+        volatility: z.number(),
+        formTrend: z.enum(['rising', 'stable', 'declining']),
+        fixtureAdjustedXG: z.number(),
+        fixtureAdjustedXA: z.number(),
+        lastUpdated: z.string()
+      }).optional()
     })),
     totalValue: z.number(),
     totalPoints: z.number(),
@@ -258,7 +643,12 @@ export const analyzeTeamResponseSchema = z.object({
       title: z.string(),
       description: z.string(),
       reasoning: z.array(z.string()),
-      confidence: z.number()
+      confidence: z.number(),
+      
+      // Enhanced Phase 1 data
+      expectedPointsRange: z.tuple([z.number(), z.number()]).optional(),
+      successProbability: z.number().optional(),
+      alternativeWindows: z.array(z.number()).optional()
     })),
     budget: z.object({
       bank: z.number(),
@@ -309,7 +699,31 @@ export const analyzeTeamResponseSchema = z.object({
       notes: z.array(z.string()),
       feasible: z.boolean()
     })).optional(),
-    lastUpdated: z.string()
+    lastUpdated: z.string(),
+    
+    // Enhanced Phase 1 data
+    simulationSummary: z.object({
+      strategy: z.string(),
+      runs: z.number(),
+      gameweeksAnalyzed: z.array(z.number()),
+      meanTotalPoints: z.number(),
+      p10TotalPoints: z.number(),
+      p90TotalPoints: z.number(),
+      successRate: z.number(),
+      boomRate: z.number(),
+      bustRate: z.number(),
+      variance: z.number(),
+      confidenceInterval: z.tuple([z.number(), z.number()]),
+      recommendationStrength: z.enum(['strong', 'moderate', 'weak']),
+      lastUpdated: z.string()
+    }).optional(),
+    expectedPointsSource: z.enum(['fdr', 'odds', 'advanced-stats', 'simulation']).optional(),
+    confidenceLevel: z.number().optional(),
+    dataFreshness: z.object({
+      odds: z.string(),
+      stats: z.string(),
+      fpl: z.string()
+    }).optional()
   }).optional(),
   error: z.string().optional()
 });

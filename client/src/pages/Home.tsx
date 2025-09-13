@@ -6,10 +6,12 @@ import ChipDetailModal from "@/components/ChipDetailModal";
 import SquadOverview from "@/components/SquadOverview";
 import FixtureDifficultyChart from "@/components/FixtureDifficultyChart";
 import TransferPlanner from "@/components/TransferPlanner";
+import SimulationSummaryCard from "@/components/SimulationSummary";
+import { ChatInterface } from "@/components/ChatInterface";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, AlertCircle } from "lucide-react";
+import { ArrowLeft, AlertCircle, MessageCircle } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { 
@@ -135,11 +137,11 @@ export default function Home() {
           <div className="max-w-2xl mx-auto space-y-8">
             <div className="text-center space-y-4">
               <h2 className="text-3xl font-bold text-foreground">
-                Optimize Your Chip Strategy
+                Infinitely Powerful FPL Chip Strategy Architect
               </h2>
               <p className="text-lg text-muted-foreground max-w-xl mx-auto">
-                Get data-driven recommendations for when to use your Wildcard, Bench Boost, 
-                Triple Captain, and Free Hit chips based on your unique 15-man squad.
+                AI-powered chip strategy optimization using bookmaker odds, advanced statistics, 
+                and Monte Carlo simulations to maximize your FPL performance.
               </p>
             </div>
             
@@ -151,18 +153,18 @@ export default function Home() {
                   <h3 className="font-semibold text-foreground mb-2">How it works:</h3>
                   <ul className="space-y-1">
                     <li>• Analyzes your current 15-player squad</li>
-                    <li>• Calculates fixture difficulty ratings</li>
-                    <li>• Identifies optimal chip timing windows</li>
+                    <li>• Uses bookmaker odds & advanced statistics</li>
+                    <li>• Runs Monte Carlo probabilistic simulations</li>
                     <li>• Provides confidence-rated recommendations</li>
                   </ul>
                 </div>
                 <div>
                   <h3 className="font-semibold text-foreground mb-2">Key features:</h3>
                   <ul className="space-y-1">
-                    <li>• Squad-specific analysis (not generic advice)</li>
-                    <li>• Season-long strategic planning</li>
-                    <li>• Fixture difficulty visualization</li>
-                    <li>• Confidence scoring for each recommendation</li>
+                    <li>• AI-powered probabilistic forecasting</li>
+                    <li>• Player volatility & form analysis</li>
+                    <li>• Expected points with confidence intervals</li>
+                    <li>• Real-time odds & statistics integration</li>
                   </ul>
                 </div>
               </div>
@@ -216,7 +218,7 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-bold text-foreground" data-testid="text-results-title">
-                  Chip Strategy Recommendations
+                  Infinitely Powerful FPL Analysis
                 </h2>
                 <p className="text-muted-foreground">
                   Based on analysis of {analysisResult.teamName} (Team ID: {teamId})
@@ -235,54 +237,111 @@ export default function Home() {
               </Button>
             </div>
 
-            <div className="grid lg:grid-cols-3 gap-6">
-              {/* Squad Overview */}
-              <div className="lg:col-span-1">
-                <SquadOverview 
-                  players={analysisResult.players}
-                  totalValue={analysisResult.totalValue}
-                  totalPoints={analysisResult.totalPoints}
-                  teamName={analysisResult.teamName}
-                />
-              </div>
+            {/* Enhanced Phase 3: Tabbed interface with AI Co-pilot */}
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="analysis" data-testid="tab-analysis">
+                  Analysis & Recommendations
+                </TabsTrigger>
+                <TabsTrigger value="copilot" data-testid="tab-copilot">
+                  <MessageCircle className="w-4 h-4 mr-2" />
+                  AI Co-pilot
+                </TabsTrigger>
+                <TabsTrigger value="transfers" data-testid="tab-transfers">
+                  Transfer Planner
+                </TabsTrigger>
+              </TabsList>
 
-              {/* Fixture Difficulty Chart */}
-              <div className="lg:col-span-2">
-                <FixtureDifficultyChart 
-                  gameweeks={analysisResult.gameweeks}
-                  highlightedGameweeks={analysisResult.recommendations.map(r => r.gameweek)}
-                />
-              </div>
-            </div>
+              {/* Analysis Tab - Original content */}
+              <TabsContent value="analysis" className="space-y-6 mt-6">
+                {/* Enhanced Phase 1: Simulation Summary - shows if enhanced data available */}
+                {analysisResult.simulationSummary && (
+                  <SimulationSummaryCard 
+                    simulationSummary={analysisResult.simulationSummary}
+                    expectedPointsSource={analysisResult.expectedPointsSource || 'fdr'}
+                    confidenceLevel={analysisResult.confidenceLevel || 75}
+                  />
+                )}
 
-            {/* Chip Recommendations */}
-            <div>
-              <h3 className="text-xl font-semibold text-foreground mb-4">
-                Recommended Chip Strategy
-              </h3>
-              {analysisResult.recommendations.length > 0 ? (
-                <div className="grid md:grid-cols-2 gap-6">
-                  {analysisResult.recommendations.map((recommendation, index) => (
-                    <ChipRecommendationCard 
-                      key={`${recommendation.chipType}-${index}`}
-                      recommendation={recommendation}
-                      onViewDetails={handleViewDetails}
+                <div className="grid lg:grid-cols-3 gap-6">
+                  {/* Squad Overview */}
+                  <div className="lg:col-span-1">
+                    <SquadOverview 
+                      players={analysisResult.players}
+                      totalValue={analysisResult.totalValue}
+                      totalPoints={analysisResult.totalPoints}
+                      teamName={analysisResult.teamName}
+                      expectedPointsSource={analysisResult.expectedPointsSource}
+                      confidenceLevel={analysisResult.confidenceLevel}
+                      dataFreshness={analysisResult.dataFreshness}
                     />
-                  ))}
-                </div>
-              ) : (
-                <Card className="p-6">
-                  <div className="text-center space-y-2">
-                    <p className="text-muted-foreground">
-                      No clear chip opportunities identified at this time.
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Your current fixture run looks fairly balanced. Consider checking back after the next gameweek.
-                    </p>
                   </div>
-                </Card>
-              )}
-            </div>
+
+                  {/* Fixture Difficulty Chart */}
+                  <div className="lg:col-span-2">
+                    <FixtureDifficultyChart 
+                      gameweeks={analysisResult.gameweeks}
+                      highlightedGameweeks={analysisResult.recommendations.map(r => r.gameweek)}
+                      showVolatility={!!analysisResult.simulationSummary}
+                      expectedPointsSource={analysisResult.expectedPointsSource}
+                    />
+                  </div>
+                </div>
+
+                {/* Chip Recommendations */}
+                <div>
+                  <h3 className="text-xl font-semibold text-foreground mb-4">
+                    Recommended Chip Strategy
+                  </h3>
+                  {analysisResult.recommendations.length > 0 ? (
+                    <div className="grid md:grid-cols-2 gap-6">
+                      {analysisResult.recommendations.map((recommendation, index) => (
+                        <ChipRecommendationCard 
+                          key={`${recommendation.chipType}-${index}`}
+                          recommendation={recommendation}
+                          onViewDetails={handleViewDetails}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <Card className="p-6">
+                      <div className="text-center space-y-2">
+                        <p className="text-muted-foreground">
+                          No clear chip opportunities identified at this time.
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Your current fixture run looks fairly balanced. Consider checking back after the next gameweek.
+                        </p>
+                      </div>
+                    </Card>
+                  )}
+                </div>
+              </TabsContent>
+
+              {/* AI Co-pilot Tab - Phase 3 Enhancement */}
+              <TabsContent value="copilot" className="mt-6">
+                <div className="grid lg:grid-cols-1 gap-6">
+                  <div className="min-h-[600px]">
+                    <ChatInterface 
+                      teamId={teamId}
+                      onAnalysisRequest={handleAnalyze}
+                      data-testid="ai-copilot-interface"
+                    />
+                  </div>
+                </div>
+              </TabsContent>
+
+              {/* Transfer Planner Tab */}
+              <TabsContent value="transfers" className="mt-6">
+                <TransferPlanner 
+                  budget={analysisResult.budget}
+                  transferPlans={transferPlans || undefined}
+                  onPlanTransfers={handlePlanTransfers}
+                  isLoading={transferPlanMutation.isPending}
+                />
+              </TabsContent>
+            </Tabs>
+
           </div>
         )}
       </main>

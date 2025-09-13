@@ -1,17 +1,26 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TrendingUp, TrendingDown, Minus, Calendar } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, Calendar, Zap, Activity } from "lucide-react";
 
 interface GameweekFDR {
   gameweek: number;
   totalFDR: number;
   averageFDR: number;
   difficulty: 'easy' | 'medium' | 'hard';
+  
+  // Enhanced Phase 1 data
+  volatility?: number;
+  confidenceLevel?: number;
+  oddsAdjustment?: number;
 }
 
 interface FixtureDifficultyChartProps {
   gameweeks: GameweekFDR[];
   highlightedGameweeks?: number[];
+  
+  // Enhanced Phase 1 data
+  showVolatility?: boolean;
+  expectedPointsSource?: 'fdr' | 'odds' | 'advanced-stats' | 'simulation';
 }
 
 const difficultyConfig = {
@@ -22,7 +31,9 @@ const difficultyConfig = {
 
 export default function FixtureDifficultyChart({ 
   gameweeks, 
-  highlightedGameweeks = [] 
+  highlightedGameweeks = [],
+  showVolatility = false,
+  expectedPointsSource = 'fdr'
 }: FixtureDifficultyChartProps) {
   const maxFDR = Math.max(...gameweeks.map(gw => gw.totalFDR));
   const minFDR = Math.min(...gameweeks.map(gw => gw.totalFDR));
@@ -36,12 +47,28 @@ export default function FixtureDifficultyChart({
   return (
     <Card className="w-full">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Calendar className="w-5 h-5 text-primary" />
-          Squad Fixture Difficulty Timeline
+        <CardTitle className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-primary" />
+            Squad Fixture Difficulty Timeline
+          </div>
+          
+          {/* Enhanced Phase 1: Data source indicator */}
+          {expectedPointsSource !== 'fdr' && (
+            <div className="flex items-center gap-1">
+              {expectedPointsSource === 'odds' && <Zap className="w-4 h-4 text-chart-1" />}
+              {expectedPointsSource === 'simulation' && <Activity className="w-4 h-4 text-chart-3" />}
+              <span className="text-xs font-medium text-muted-foreground">
+                Enhanced Analysis
+              </span>
+            </div>
+          )}
         </CardTitle>
         <p className="text-sm text-muted-foreground">
-          Total FDR across your 15-man squad for upcoming gameweeks
+          {expectedPointsSource === 'fdr' ? 
+            'Total FDR across your 15-man squad for upcoming gameweeks' :
+            'Enhanced difficulty analysis with odds & volatility data'
+          }
         </p>
       </CardHeader>
       
@@ -92,6 +119,11 @@ export default function FixtureDifficultyChart({
                       </div>
                       <div className="text-xs text-muted-foreground">
                         {gw.averageFDR.toFixed(1)}
+                        {showVolatility && gw.volatility && (
+                          <div className="text-xs text-chart-2">
+                            σ{gw.volatility.toFixed(2)}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

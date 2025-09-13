@@ -4,14 +4,18 @@ import { storage } from "./storage";
 import { 
   analyzeTeamRequestSchema, 
   planTransfersRequestSchema,
+  chatRequestSchema,
   type AnalyzeTeamResponse,
-  type PlanTransfersResponse 
+  type PlanTransfersResponse,
+  type AICopilotResponse 
 } from "@shared/schema";
 import { AnalysisEngine } from "./services/analysisEngine";
 import { TransferEngine } from "./services/transferEngine";
+import { AICopilotService } from "./services/aiCopilotService";
 
 const analysisEngine = new AnalysisEngine();
 const transferEngine = new TransferEngine();
+const aiCopilotService = AICopilotService.getInstance();
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Health check route
@@ -151,15 +155,116 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Clear cache route (for development/testing)
   app.post("/api/cache/clear", async (req, res) => {
     try {
-      // Clear analysis cache and FPL API cache
+      // Clear all service caches
       const fplApi = await import('./services/fplApi');
-      const apiService = fplApi.FPLApiService.getInstance();
-      apiService.clearCache();
+      const oddsService = await import('./services/oddsService');
+      const statsService = await import('./services/statsService');
       
-      res.json({ success: true, message: 'Cache cleared successfully' });
+      const apiService = fplApi.FPLApiService.getInstance();
+      const odds = oddsService.OddsService.getInstance();
+      const stats = statsService.StatsService.getInstance();
+      
+      apiService.clearCache();
+      odds.clearCache();
+      stats.clearCache();
+      
+      res.json({ success: true, message: 'All caches cleared successfully' });
     } catch (error) {
       console.error('Cache clear error:', error);
       res.status(500).json({ success: false, error: 'Failed to clear cache' });
+    }
+  });
+
+  // Enhanced Phase 1: Data provider status endpoint
+  app.get("/api/providers/status", async (req, res) => {
+    try {
+      const oddsService = await import('./services/oddsService');
+      const statsService = await import('./services/statsService');
+      
+      const odds = oddsService.OddsService.getInstance();
+      const stats = statsService.StatsService.getInstance();
+      
+      const status = {
+        odds: odds.getProviderInfo(),
+        stats: stats.getProviderInfo(),
+        simulation: {
+          name: 'monte-carlo',
+          available: true,
+          defaultRuns: 1000
+        },
+        lastUpdated: new Date().toISOString()
+      };
+      
+      res.json({ success: true, data: status });
+    } catch (error) {
+      console.error('Provider status error:', error);
+      res.status(500).json({ success: false, error: 'Failed to get provider status' });
+    }
+  });
+
+  // Enhanced Phase 1: Simulation configuration endpoint
+  app.get("/api/simulation/config", (req, res) => {
+    const config = {
+      defaultRuns: 1000,
+      maxRuns: 5000,
+      gameweeksAnalyzed: 6,
+      useOdds: process.env.ODDS_PROVIDER !== 'mock',
+      useAdvancedStats: process.env.STATS_PROVIDER !== 'mock',
+      providers: {
+        odds: process.env.ODDS_PROVIDER || 'mock',
+        stats: process.env.STATS_PROVIDER || 'mock'
+      }
+    };
+    
+    res.json({ success: true, data: config });
+  });
+
+  // Enhanced Phase 3: AI Co-pilot chat endpoint
+  app.post("/api/chat", async (req, res) => {
+    try {
+      // Validate request
+      const validatedData = chatRequestSchema.parse(req.body);
+      
+      // Generate session ID if not provided
+      const sessionId = validatedData.sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      console.log(`Processing chat message for session ${sessionId}...`);
+      
+      // Process the chat message
+      const response = await aiCopilotService.processChatMessage(
+        validatedData.message,
+        sessionId,
+        validatedData.teamId,
+        validatedData.userId
+      );
+      
+      console.log(`Chat response generated (${response.conversationContext.responseTime}ms)`);
+      
+      res.json({
+        success: true,
+        data: {
+          ...response,
+          sessionId // Include session ID in response
+        }
+      });
+      
+    } catch (error) {
+      console.error('Chat processing error:', error);
+      
+      let errorMessage = 'Failed to process chat message';
+      
+      if (error instanceof Error) {
+        if (error.message.includes('validation')) {
+          errorMessage = 'Invalid chat message format.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      res.status(400).json({
+        success: false,
+        error: errorMessage
+      });
     }
   });
 

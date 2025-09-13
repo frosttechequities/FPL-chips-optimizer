@@ -1,6 +1,6 @@
-# FPL Chip Strategy Architect
+# Infinitely Powerful FPL Chip Strategy Architect
 
-Personalized FPL chip timing and transfer planning based on your actual squad and upcoming fixtures. Live data from the official FPL API, clear recommendations in the UI, and a simple REST API under the hood.
+AI-powered FPL strategy optimization combining bookmaker odds, advanced statistics, Monte Carlo simulations, machine learning predictions, competitive intelligence, and natural language processing. Features an intelligent AI co-pilot that understands FPL terminology and provides conversational strategic guidance.
 
 ## Quickstart
 
@@ -52,47 +52,135 @@ Base URL is the same as the client (the Express server serves both).
 - POST `/api/cache/clear`
   - Clears in-memory FPL API cache. Useful during development.
 
+- POST `/api/chat`
+  - Body: `{ message: string, sessionId?: string, teamId?: string, userId?: string }`
+  - Response: `AICopilotResponse` with:
+    - `message`: AI-generated response to user query
+    - `insights`: structured AI insights and recommendations
+    - `suggestions`: actionable suggestions
+    - `followUpQuestions`: contextual follow-up questions
+    - `conversationContext`: query intent, response time, model version
+    - `sessionId`: conversation session identifier
+  - Example:
+    ```bash
+    curl -s http://localhost:5000/api/chat \
+      -H 'content-type: application/json' \
+      -d '{"message":"When should I use my wildcard?", "teamId":"1234567"}'
+    ```
+
 ## Caching
 
 - FPL API responses: 5 minutes (in-memory, per-URL key).
 - Analysis results: 15 minutes per team (`/api/analyze` checks and returns cached result if still fresh).
+- AI conversation sessions: 30 minutes in-memory with automatic cleanup.
+- ML predictions and competitive intelligence: Various cache durations based on data freshness requirements.
 
 ## Repository Layout
 
 - `server/`
   - `index.ts`: Express setup, Vite dev middleware/static serving, error handling.
-  - `routes.ts`: REST endpoints (health, analyze, transfer-plan, cache/clear).
+  - `routes.ts`: REST endpoints (health, analyze, transfer-plan, cache/clear, chat).
   - `services/fplApi.ts`: Official FPL API wrapper with caching and helpers.
-  - `services/analysisEngine.ts`: Builds squad, FDR timeline, and chip recommendations.
+  - `services/analysisEngine.ts`: Enhanced with Phase 1 simulations, Phase 2 ML, and Phase 3 AI integration.
   - `services/transferEngine.ts`: Generates transfer plans (conservative, aggressive, chip-optimized).
+  - `services/oddsService.ts`: Phase 1 - Bookmaker odds integration for realistic predictions.
+  - `services/statsService.ts`: Phase 1 - Advanced player statistics and performance metrics.
+  - `services/mlPredictionEngine.ts`: Phase 2 - Machine learning models for player predictions.
+  - `services/competitiveIntelligenceEngine.ts`: Phase 2 - Rival analysis and strategic insights.
+  - `services/naturalLanguageProcessor.ts`: Phase 3 - NLP for FPL query understanding.
+  - `services/aiCopilotService.ts`: Phase 3 - Conversational AI with FPL domain expertise.
   - `storage.ts`: In-memory caches for analysis and FPL objects.
   - `vite.ts`: Dev HMR and production file serving.
 - `client/`
-  - React app (Team ID input → analysis results → recommendations/details → transfer planning).
+  - React app with tabbed interface: Analysis & Recommendations, AI Co-pilot, Transfer Planner.
+  - `components/ChatInterface.tsx`: Phase 3 - Conversational AI chat interface.
+  - `components/AIInsights.tsx`: Phase 3 - AI-generated insights and recommendations display.
+  - `components/SimulationSummary.tsx`: Phase 1 - Monte Carlo simulation results.
   - Tailwind theming via CSS variables; shadcn-style UI primitives.
 - `shared/`
   - TypeScript models and Zod schemas for requests/responses and FPL data.
+  - Enhanced schemas for AI conversations, ML predictions, and simulation data.
 
 ## Frontend UX
 
 1. Enter your Team ID on the home page.
-2. The app calls `/api/analyze` and shows:
-   - Squad overview (value, points, position groups)
-   - Fixture Difficulty chart for your entire squad
-   - Chip recommendation cards + details modal
-3. Optionally trigger `/api/transfer-plan` actions from the planner to see candidate moves.
+2. The app calls `/api/analyze` and displays results in a tabbed interface:
+
+**Analysis & Recommendations Tab:**
+   - Enhanced simulation summary with Monte Carlo confidence intervals
+   - Squad overview with ML-enhanced expected points
+   - Fixture Difficulty chart with volatility indicators
+   - AI-powered chip recommendation cards with success probabilities
+
+**AI Co-pilot Tab:**
+   - Conversational chat interface with FPL terminology understanding
+   - Context-aware responses based on your squad and analysis
+   - Structured AI insights with reasoning and action items
+   - Follow-up questions to guide strategic discussions
+   - Session persistence for continuous conversations
+
+**Transfer Planner Tab:**
+   - Budget analysis and transfer planning tools
+   - Multiple plan options (conservative, aggressive, chip-optimized)
+   - Integration with competitive intelligence insights
 
 ## Development Notes
 
 - TypeScript strict mode across client/server. Aliases `@` and `@shared` are configured in Vite/tsconfig.
 - Logging: concise API logs for `/api/*` with response status + timing.
 - No database required at runtime. `drizzle.config.ts` only matters if you add persistence later.
+- Hybrid intelligence architecture combining statistical simulations, ML predictions, and conversational AI.
+- Provider pattern for data services with mock/real implementations for development flexibility.
+- In-memory session management for AI conversations with automatic cleanup.
 
-## Roadmap (What we will improve next)
+## Implementation Status
 
-- Free Hit planning: implement real single‑GW optimization instead of placeholder.
-- Expected points: refine heuristics (incorporate upcoming fixture difficulty weighting).
-- Currency formatting: replace mojibake (e.g., `A�`) with proper `£` formatting via `Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' })` or compact milllions (`£{value.toFixed(1)}m`).
-- Documentation: keep this file aligned with behavior as features evolve.
+### Phase 1: Enhanced Probabilistic Analysis ✅ COMPLETED
+- ✅ Bookmaker odds integration for realistic player predictions
+- ✅ Advanced statistics (xG, xA, form, volatility) from multiple providers
+- ✅ Monte Carlo simulations with confidence intervals and success probabilities
+- ✅ Enhanced chip recommendations with simulation-backed confidence scores
+- ✅ Fixture difficulty analysis with volatility indicators
+
+### Phase 2: Machine Learning & Competitive Intelligence ✅ COMPLETED  
+- ✅ ML prediction engine with player performance forecasting
+- ✅ Competitive intelligence engine for rival analysis and market insights
+- ✅ Historical data analysis and pattern recognition
+- ✅ Strategic recommendations combining statistical and ML approaches
+- ✅ Enhanced expected points calculations with multiple data sources
+
+### Phase 3: AI Co-pilot & Natural Language Processing ✅ COMPLETED
+- ✅ Natural language processor with FPL terminology understanding
+- ✅ Conversational AI co-pilot with domain expertise
+- ✅ Intent recognition and entity extraction for FPL queries
+- ✅ Context-aware conversation management with session persistence
+- ✅ Structured AI insights with reasoning and actionable recommendations
+- ✅ Chat interface with message history and follow-up suggestions
+
+## Next Development Priorities
+
+### Phase 4: Advanced Optimization & Personalization
+- **Personalized Strategy Profiles**: Learn user preferences and risk tolerance
+- **Advanced Transfer Optimization**: Multi-gameweek transfer planning with chip coordination
+- **Real-time Market Intelligence**: Player price change predictions and ownership trends
+- **Custom Metrics Dashboard**: User-defined KPIs and performance tracking
+
+### Phase 5: Community & Social Features
+- **League Analysis**: Head-to-head comparison and competitive positioning
+- **Social Insights**: Community trends and popular strategies
+- **Performance Analytics**: Historical performance tracking and improvement suggestions
+- **Strategy Sharing**: Export and share analysis reports
+
+### Technical Improvements
+- **Free Hit Optimization**: Implement single-gameweek team optimization algorithms
+- **Enhanced ML Models**: Incorporate weather, referee, and venue data
+- **Performance Optimization**: Caching strategies and response time improvements
+- **Mobile Responsiveness**: Enhanced mobile experience and PWA features
+
+### Quality & Reliability
+- **Comprehensive Testing**: Unit, integration, and E2E test coverage
+- **Error Handling**: Robust error recovery and user feedback
+- **Documentation**: API documentation and user guides
+- **Monitoring**: Performance metrics and usage analytics
 
 If you’re running on Replit, this repo is configured to serve both API and client on the same port for a smooth DX.
