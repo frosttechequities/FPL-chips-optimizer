@@ -95,6 +95,32 @@ export class FPLApiService {
     );
   }
 
+  async getUserHistory(managerId: number): Promise<{
+    current: Array<{
+      event: number;
+      points: number;
+      total_points: number;
+      rank: number;
+      overall_rank: number;
+      bank: number;
+      value: number;
+      event_transfers: number;
+      event_transfers_cost: number;
+      points_on_bench: number;
+    }>;
+    past: any[];
+    chips: Array<{
+      name: string;
+      time: string;
+      event: number;
+    }>;
+  }> {
+    return this.fetchWithCache(
+      `${FPL_BASE_URL}/entry/${managerId}/history/`,
+      `history-${managerId}`
+    );
+  }
+
   async getUserInfo(managerId: number): Promise<{ name: string; player_first_name: string; player_last_name: string }> {
     return this.fetchWithCache<{ name: string; player_first_name: string; player_last_name: string }>(
       `${FPL_BASE_URL}/entry/${managerId}/`,
@@ -119,8 +145,93 @@ export class FPLApiService {
     );
   }
 
+  async computeFreeTransfers(managerId: number): Promise<number> {
+    try {
+      const history = await this.getUserHistory(managerId);
+      const currentGW = await this.getCurrentGameweek();
+      
+      // Find current and previous gameweek data
+      const currentGWData = history.current.find(gw => gw.event === currentGW);
+      const previousGWData = history.current.find(gw => gw.event === currentGW - 1);
+      
+      if (!currentGWData) {
+        return 1; // Default to 1 free transfer if no data
+      }
+      
+      // If transfers were made this week and cost points, then no free transfers left
+      if (currentGWData.event_transfers_cost > 0) {
+        return 0;
+      }
+      
+      // Calculate free transfers: start with 1, add 1 if no transfers were made last GW
+      let freeTransfers = 1;
+      if (previousGWData && previousGWData.event_transfers === 0) {
+        freeTransfers = Math.min(2, freeTransfers + 1); // Max 2 free transfers
+      }
+      
+      return freeTransfers;
+    } catch (error) {
+      console.warn('Could not compute free transfers, defaulting to 1:', error);
+      return 1; // Default fallback
+    }
+  }
+
+  async getPlayerExpectedPoints(playerId: number, gameweeksAhead: number = 5): Promise<number> {
+    try {
+      const bootstrap = await this.getBootstrapData();
+      const player = bootstrap.elements.find(p => p.id === playerId);
+      
+      if (!player) {
+        return 0;
+      }
+      
+      // Simple expected points calculation based on current form and total points
+      const pointsPerGame = player.total_points / Math.max(1, 10); // Assume ~10 games played
+      const formMultiplier = 1; // Could be enhanced with form data
+      
+      return pointsPerGame * gameweeksAhead * formMultiplier;
+    } catch (error) {
+      console.warn(`Could not calculate expected points for player ${playerId}:`, error);
+      return 0;
+    }
+  }
+
+  async getNextDeadline(): Promise<string> {
+    try {
+      const bootstrap = await this.getBootstrapData();
+      const nextEvent = bootstrap.events.find(event => event.is_next);
+      
+      if (nextEvent && nextEvent.deadline_time) {
+        return nextEvent.deadline_time;
+      }
+      
+      // Fallback: find current or next upcoming event
+      const upcomingEvent = bootstrap.events.find(event => !event.finished) || bootstrap.events[0];
+      return upcomingEvent?.deadline_time || new Date().toISOString();
+    } catch (error) {
+      console.warn('Could not get next deadline:', error);
+      return new Date().toISOString();
+    }
+  }
+
+  async getAllPlayersWithExpectedPoints(gameweeksAhead: number = 5): Promise<Array<FPLPlayer & { expectedPoints: number }>> {
+    const bootstrap = await this.getBootstrapData();
+    
+    return Promise.all(
+      bootstrap.elements.map(async (player) => ({
+        ...player,
+        expectedPoints: await this.getPlayerExpectedPoints(player.id, gameweeksAhead)
+      }))
+    );
+  }
+
   // Clear cache (useful for testing or forcing fresh data)
   clearCache(): void {
     this.cache.clear();
+  }
+
+  // Clear specific cache entry
+  clearCacheEntry(key: string): void {
+    this.cache.delete(key);
   }
 }
