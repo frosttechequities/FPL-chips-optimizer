@@ -191,7 +191,7 @@ export class OpenRouterService {
       { role: 'user', content: userQuery }
     ];
 
-    return await this.generateCompletionSafe(messages, {
+    const __answer = await this.generateCompletionSafe(messages, {
       temperature: 0.8, // Slightly higher for more creative FPL insights
       maxTokens: 1200,   // Increased limit to prevent truncation
       timeoutMs: 20000,
@@ -201,6 +201,7 @@ export class OpenRouterService {
         { role: 'user', content: userQuery }
       ]
     });
+    return this.sanitizeFinalContent(__answer);
   }
 
   /**
@@ -468,6 +469,18 @@ Before each response, verify:
     }
     
     return summary;
+  }
+
+  /**
+   * Light content sanitizer to enforce currency symbol and remove obvious filler
+   */
+  private sanitizeFinalContent(text: string): string {
+    let out = (text || '').replace(/A�/g, '£');
+    // Remove leading filler words that sometimes leak from models
+    out = out.replace(/\b(?:wait,?\s*|let me[,\s]+|okay,?\s*|well,?\s*)/gi, '');
+    // Normalize any FDR decimal mentions to integer form if pattern appears
+    out = out.replace(/FDR\s*[:]?\s*([1-5])(?:\.[0-9]+)?/gi, (_m, a) => `FDR: ${a}`);
+    return out.trim();
   }
 
   /**

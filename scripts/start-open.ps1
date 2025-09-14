@@ -27,14 +27,29 @@ $server = Start-Process -FilePath "node" -ArgumentList "dist/index.js" -WindowSt
 
 # Poll health endpoint
 $healthUrl = "http://localhost:$Port/api/health"
-$maxAttempts = 60
+$maxAttempts = 120
 $started = $false
 for ($i = 0; $i -lt $maxAttempts; $i++) {
   try {
-    $res = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2
+    # Try 127.0.0.1 first to avoid IPv6 localhost quirks
+    $res = Invoke-WebRequest -Uri ("http://127.0.0.1:$Port/api/health") -UseBasicParsing -TimeoutSec 2
     if ($res.StatusCode -eq 200) { $started = $true; break }
   } catch {
     Start-Sleep -Milliseconds 800
+  }
+  # Fallback: check localhost URL as well
+  if (-not $started) {
+    try {
+      $res2 = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2
+      if ($res2.StatusCode -eq 200) { $started = $true; break }
+    } catch {}
+  }
+  # As a last resort, detect readiness by log line
+  if (-not $started -and (Test-Path $logOut)) {
+    try {
+      $tail = Get-Content $logOut -Tail 50 -ErrorAction SilentlyContinue
+      if ($tail -match 'serving on port') { $started = $true; break }
+    } catch {}
   }
 }
 
