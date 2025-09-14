@@ -475,7 +475,7 @@ Before each response, verify:
    * Light content sanitizer to enforce currency symbol and remove obvious filler
    */
   private sanitizeFinalContent(text: string): string {
-    let out = (text || '').replace(/A�/g, '£');
+    let out = (text || '').replace(/A�/g, '£').replace(/�(?=\d)/g, '£');
     // Remove leading filler words that sometimes leak from models
     out = out.replace(/\b(?:wait,?\s*|let me[,\s]+|okay,?\s*|well,?\s*)/gi, '');
     // Normalize any FDR decimal mentions to integer form if pattern appears
