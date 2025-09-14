@@ -204,6 +204,64 @@ export class OpenRouterService {
     return this.sanitizeFinalContent(__answer);
   }
 
+  // ---- Structured output path for near-bulletproof accuracy ----
+
+  interface StructuredFPLFixtureRef { gameweek: number; player: string; opponent: string; isHome: boolean; fdr: number }
+  interface StructuredFPLResponse { recommendation: string; playersUsed: string[]; fixturesUsed: StructuredFPLFixtureRef[]; confidence: number }
+
+  private buildStructuredPrompt(fplContext: any, userQuery: string): { system: string; user: string } {
+    const { intent, entities, squadData, liveFPLData } = fplContext;
+    const allowedPlayers: string[] = (liveFPLData?.players || []).map((p: any) => p.name).filter(Boolean);
+
+    const system = `You are an expert FPL assistant. Respond ONLY with valid JSON, no prose, matching this TypeScript interface exactly:\n\n{\n  "recommendation": string, // concise actionable advice under 160 words\n  "playersUsed": string[],  // ONLY names from AllowedPlayers list\n  "fixturesUsed": Array<{ "gameweek": number, "player": string, "opponent": string, "isHome": boolean, "fdr": number }>,\n  "confidence": number // 0..100\n}\n\nHard rules:\n- Mention ONLY players from AllowedPlayers. If a player would be referenced but is not allowed, omit them and rephrase.\n- Use only integer FDR values 1-5.\n- Keep recommendation < 160 words.\n- Do NOT include any text outside JSON (no backticks, no code block).\n\nAllowedPlayers: ${allowedPlayers.join(', ')}\nIntent: ${intent}\nEntities: ${JSON.stringify(entities)}`;
+
+    const user = `Question: ${userQuery}\n\nContext:\n- Team Value: £${squadData?.teamValue ?? 'N/A'}m, Bank: £${squadData?.bank ?? 'N/A'}m, Free Transfers: ${squadData?.freeTransfers ?? 'N/A'}\n- Starters (${(liveFPLData?.players||[]).filter((p:any)=>p.isStarter).length}): ${allowedPlayers.join(', ')}\n- Upcoming fixtures (summarized in your memory)`;
+
+    return { system, user };
+  }
+
+  private tryParseJsonBlock(text: string): any | null {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch {}
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+      try { return JSON.parse(match[0]); } catch {}
+    }
+    return null;
+  }
+
+  async generateFPLStructuredResponse(
+    userQuery: string,
+    fplContext: any,
+    conversationHistory: LLMMessage[] = []
+  ): Promise<StructuredFPLResponse | null> {
+    const { system, user } = this.buildStructuredPrompt(fplContext, userQuery);
+    const messages: LLMMessage[] = [
+      { role: 'system', content: system },
+      ...conversationHistory.slice(-2),
+      { role: 'user', content: user }
+    ];
+    const raw = await this.generateCompletionSafe(messages, { maxTokens: 800, timeoutMs: 20000 });
+    const json = this.tryParseJsonBlock(raw);
+    if (!json) return null;
+    if (typeof json.recommendation !== 'string' || !Array.isArray(json.playersUsed) || !Array.isArray(json.fixturesUsed)) return null;
+    return json as StructuredFPLResponse;
+  }
+
+  formatStructuredToText(s: StructuredFPLResponse): string {
+    const lines: string[] = [];
+    lines.push(`**Recommendation**: ${s.recommendation.trim()}`);
+    if (s.playersUsed.length) {
+      lines.push(`Players considered: ${s.playersUsed.join(', ')}`);
+    }
+    if (s.fixturesUsed.length) {
+      const parts = s.fixturesUsed.slice(0, 4).map(f => `GW${f.gameweek} ${f.player} ${f.isHome ? 'vs' : '@'} ${f.opponent} (FDR: ${Math.max(1, Math.min(5, Math.round(f.fdr)))})`);
+      lines.push(`Key fixtures: ${parts.join('; ')}`);
+    }
+    lines.push(`Confidence: ${Math.max(0, Math.min(100, Math.round(s.confidence)))}%`);
+    return this.sanitizeFinalContent(lines.join("\n\n"));
+  }
+
   /**
    * Build a comprehensive system prompt for FPL expertise with real data
    */

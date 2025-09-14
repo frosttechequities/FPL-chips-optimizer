@@ -324,19 +324,57 @@ export class AICopilotService {
     // Get the user's current query
     const currentQuery = context.messages[context.messages.length - 1]?.content || intent.originalQuery;
 
-    // Generate LLM response with LIVE FPL context (RAG)
-    let llmResponse = await this.llmService.generateFPLResponse(
+    // Structured path first (preferred)
+    const structured = await this.llmService.generateFPLStructuredResponse(
       currentQuery,
-      {
-        intent: intent.type,
-        entities: intent.entities,
-        squadData,
-        analysisData,
-        recommendations,
-        liveFPLData // Add live data for accuracy
-      },
+      { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
       conversationHistory
     );
+
+    // Build allowed validation sets
+    const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => (p.name as string)).filter(Boolean);
+    const allowedNameSet = new Set(allowedNames.map(n => n.toLowerCase()));
+    const allowedFixturesSet = new Set<string>();
+    try {
+      for (const gw of (analysisData?.gameweeks || [])) {
+        for (const f of (gw.fixtures || [])) {
+          const key = `${gw.gameweek}|${(f.playerName||'').toLowerCase()}|${(f.opponent||'').toLowerCase()}|${f.isHome?'H':'A'}|${Math.round(f.fdr||0)}`;
+          allowedFixturesSet.add(key);
+        }
+      }
+    } catch {}
+
+    let finalMessage: string;
+    if (structured) {
+      // Validate structured content
+      structured.playersUsed = (structured.playersUsed || []).filter((n: any) => typeof n === 'string' && allowedNameSet.has(n.toLowerCase()));
+      structured.fixturesUsed = (structured.fixturesUsed || []).filter((fx: any) => {
+        if (!fx || typeof fx.player !== 'string' || typeof fx.opponent !== 'string') return false;
+        const key = `${Math.round(fx.gameweek||0)}|${fx.player.toLowerCase()}|${fx.opponent.toLowerCase()}|${fx.isHome?'H':'A'}|${Math.round(fx.fdr||0)}`;
+        return allowedFixturesSet.has(key);
+      });
+      finalMessage = this.llmService.formatStructuredToText(structured);
+    } else {
+      // Fallback to free-form with sanitizer + rewrite enforcement
+      let llmResponse = await this.llmService.generateFPLResponse(
+        currentQuery,
+        { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
+        conversationHistory
+      );
+      try {
+        if (allowedNames.length > 0) {
+          const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
+          const rewritten = await this.llmService.generateCompletionSafe([
+            { role: 'system', content: rewriteSystem },
+            { role: 'user', content: llmResponse }
+          ], { maxTokens: 600, timeoutMs: 10000 });
+          if (rewritten && rewritten.trim().length > 0) {
+            llmResponse = rewritten;
+          }
+        }
+      } catch {}
+      finalMessage = llmResponse;
+    }
     // Enforce allowed player references only (rewrite if needed)
     try {
       const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => p.name).filter(Boolean);
@@ -365,7 +403,7 @@ export class AICopilotService {
     const followUpQuestions = this.generateDynamicFollowUps(intent, context);
 
     return {
-      message: llmResponse,
+      message: finalMessage,
       insights,
       suggestions,
       followUpQuestions,
