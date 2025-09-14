@@ -8,6 +8,7 @@
 import { NaturalLanguageProcessor } from './naturalLanguageProcessor';
 import { AnalysisEngine } from './analysisEngine';
 import { MLPredictionEngine } from './mlPredictionEngine';
+import { TransferEngine } from './transferEngine';
 import { CompetitiveIntelligenceEngine } from './competitiveIntelligenceEngine';
 import { OpenRouterService } from './openRouterService';
 import { 
@@ -31,6 +32,7 @@ export class AICopilotService {
   private mlEngine: MLPredictionEngine;
   private competitiveEngine: CompetitiveIntelligenceEngine;
   private llmService: OpenRouterService;
+  private transferEngine: TransferEngine;
   private sessions = new Map<string, ConversationSession>();
   private readonly SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 
@@ -40,6 +42,7 @@ export class AICopilotService {
     this.mlEngine = MLPredictionEngine.getInstance();
     this.competitiveEngine = CompetitiveIntelligenceEngine.getInstance();
     this.llmService = OpenRouterService.getInstance();
+    this.transferEngine = new TransferEngine();
     
     // Clean up expired sessions periodically
     setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000); // Every 5 minutes
@@ -626,6 +629,59 @@ export class AICopilotService {
     }
 
     try {
+      // Engine-backed transfer suggestions (strict non-owned; optional DEF focus)
+      try {
+        const latestText = (context.messages[context.messages.length - 1]?.content || '').toLowerCase();
+        const focusDef = latestText.includes('defence') || latestText.includes('defense') || latestText.includes('def');
+        const analysis = await this.analysisEngine.analyzeTeam(context.teamId);
+        const rosterById = new Map<number, any>((analysis.players || []).map((p: any) => [p.id, p]));
+        const ownedIds = new Set<number>((analysis.players || []).map((p: any) => p.id));
+        const budget = analysis.budget?.bank ?? 0;
+        const freeTransfers = analysis.budget?.freeTransfers ?? 1;
+        const gameweeks = analysis.gameweeks ?? [];
+
+        const plans = await this.transferEngine.generateTransferPlans(
+          analysis.players,
+          budget,
+          freeTransfers,
+          { targetGameweek: gameweeks[0]?.gameweek ?? 1, chipType: undefined, maxHits: 0, includeRiskyMoves: false, gameweeks }
+        );
+
+        let top = plans.find(p => p.moves.length > 0);
+        if (top) {
+          let cleanMoves = top.moves.filter(m => !ownedIds.has(m.inPlayerId));
+          if (focusDef) {
+            cleanMoves = cleanMoves.filter(m => (rosterById.get(m.outPlayerId)?.position) === 'DEF');
+          }
+          if (cleanMoves.length === 0 && plans.length > 1) {
+            const alt = plans.slice(1).find(p => p.moves.some(m => !ownedIds.has(m.inPlayerId)));
+            if (alt) {
+              top = alt;
+              cleanMoves = top.moves.filter(m => !ownedIds.has(m.inPlayerId) && (!focusDef || (rosterById.get(m.outPlayerId)?.position) === 'DEF'));
+            }
+          }
+          if (cleanMoves.length > 0) {
+            const lines = cleanMoves.slice(0, 3).map(m => Out:  ? In:  (+ pts));
+            const msg = [
+              focusDef ? 'Top defense upgrades without hits:' : Top upgrades without hits (budget £m,  FT):,
+              ...lines,
+              Projected net gain:  pts
+            ].join('\n');
+            return {
+              message: msg,
+              insights: [],
+              suggestions: [
+                Target GW with  upgrade(s),
+                'Avoid hits unless expected gain > 6 pts'
+              ],
+              followUpQuestions: [
+                'Want a riskier plan with hits?',
+                focusDef ? 'Should I consider premium defender upgrades?' : 'Prefer focusing on bench or premium upgrades?'
+              ]
+            };
+          }
+        }
+      } catch {}
       // Get current analysis and competitive intelligence
       const [analysis, competitiveReport] = await Promise.all([
         this.analysisEngine.analyzeTeam(context.teamId),
