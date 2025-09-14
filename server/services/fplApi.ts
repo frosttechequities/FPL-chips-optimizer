@@ -4,6 +4,7 @@ import {
   type FPLFixture,
   type FPLUserSquad
 } from "@shared/schema";
+import { ProxyAgent, setGlobalDispatcher } from 'undici';
 
 const FPL_BASE_URL = 'https://fantasy.premierleague.com/api';
 
@@ -34,12 +35,57 @@ export class FPLApiService {
   private static instance: FPLApiService;
   private cache: Map<string, { data: any; timestamp: number }> = new Map();
   private readonly cacheExpiry = 5 * 60 * 1000; // 5 minutes
+  private readonly timeoutMs = parseInt(process.env.FPL_FETCH_TIMEOUT_MS || '15000', 10);
+  private readonly retries = parseInt(process.env.FPL_FETCH_RETRIES || '2', 10);
 
   public static getInstance(): FPLApiService {
     if (!FPLApiService.instance) {
       FPLApiService.instance = new FPLApiService();
     }
     return FPLApiService.instance;
+  }
+
+  constructor() {
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    try {
+      if (proxyUrl) {
+        const agent = new ProxyAgent(proxyUrl);
+        setGlobalDispatcher(agent);
+        console.log(`[FPLApiService] Using proxy for outbound requests: ${proxyUrl}`);
+      }
+    } catch (e) {
+      console.warn('[FPLApiService] Failed to initialize proxy agent:', e);
+    }
+  }
+
+  private async fetchJson(url: string, init?: RequestInit): Promise<any> {
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= this.retries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const res = await fetch(url, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'FPL-Chip-Strategy-Architect/1.0',
+            'Accept': 'application/json',
+            ...(init?.headers || {})
+          }
+        } as RequestInit);
+        clearTimeout(timer);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`);
+        }
+        return await res.json();
+      } catch (err) {
+        clearTimeout(timer);
+        lastErr = err;
+        await new Promise(r => setTimeout(r, 250 * (attempt + 1)));
+      }
+    }
+    throw lastErr || new Error('Network error');
   }
 
   private async fetchWithCache<T>(url: string, cacheKey: string): Promise<T> {
@@ -51,18 +97,7 @@ export class FPLApiService {
     }
 
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'FPL-Chip-Strategy-Architect/1.0',
-          'Accept': 'application/json'
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`FPL API returned ${response.status}: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
+      const data = await this.fetchJson(url);
       this.cache.set(cacheKey, { data, timestamp: now });
       return data as T;
     } catch (error) {
