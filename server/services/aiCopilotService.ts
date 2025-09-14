@@ -325,7 +325,7 @@ export class AICopilotService {
     const currentQuery = context.messages[context.messages.length - 1]?.content || intent.originalQuery;
 
     // Generate LLM response with LIVE FPL context (RAG)
-    const llmResponse = await this.llmService.generateFPLResponse(
+    let llmResponse = await this.llmService.generateFPLResponse(
       currentQuery,
       {
         intent: intent.type,
@@ -337,6 +337,20 @@ export class AICopilotService {
       },
       conversationHistory
     );
+    // Enforce allowed player references only (rewrite if needed)
+    try {
+      const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => p.name).filter(Boolean);
+      if (allowedNames.length > 0) {
+        const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
+        const rewritten = await this.llmService.generateCompletionSafe([
+          { role: 'system', content: rewriteSystem },
+          { role: 'user', content: llmResponse }
+        ], { maxTokens: 600, timeoutMs: 10000 });
+        if (rewritten && rewritten.trim().length > 0) {
+          llmResponse = rewritten;
+        }
+      }
+    } catch {}
 
     // Generate insights based on analysis data
     const insights: AIInsight[] = [];
