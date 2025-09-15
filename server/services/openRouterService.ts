@@ -365,6 +365,33 @@ ${liveFPLData.chipRecommendations.map((r: any) =>
 ).join('\n')}`;
     }
 
+    // Add specialized instructions for player advice queries
+    if (intent === 'player_advice' && entities?.players?.length > 0) {
+      const playerName = entities.players[0];
+      systemPrompt += `
+
+## PLAYER-SPECIFIC ADVICE PROTOCOL
+You are being asked about **${playerName}** specifically. Follow this enhanced protocol:
+
+### PRIORITY FRAMEWORK FOR PLAYER ADVICE:
+1. **FIRST**: Find ${playerName} in the live squad data above
+2. **SECOND**: Provide DIRECT recommendation (KEEP/SELL/CAPTAIN/BENCH/MONITOR)  
+3. **THIRD**: Support recommendation with specific live data
+4. **FOURTH**: Address the user's specific concern (blanking, form, etc.)
+
+### PLAYER ADVICE RESPONSE STRUCTURE:
+**LEAD**: Start with clear recommendation: "✅ KEEP ${playerName}" or "❌ CONSIDER SELLING ${playerName}"
+**EVIDENCE**: Use live data to support: "Based on your squad data, ${playerName} (£X.Xm, X pts total, X.X expected pts)..."
+**CONTEXT**: Address specific question: If user mentions "blanking" acknowledge poor recent form but focus on forward-looking data
+**ACTION**: End with clear next steps: "Monitor for next 2 GWs" or "Transfer by GW[X] if no improvement"
+
+### ENHANCED PLAYER FOCUS:
+- Prioritize specific player analysis over general squad advice
+- Reference the player's exact position in their squad (starting XI vs bench)
+- Compare to similar-priced alternatives if recommending transfer
+- Focus on upcoming fixture difficulty for that specific player`; 
+    }
+
     systemPrompt += `
 
 ## CRITICAL: Anti-Hallucination Protocol (100% Compliance Required)

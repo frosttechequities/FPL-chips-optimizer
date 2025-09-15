@@ -331,7 +331,7 @@ export interface ConversationContext {
 
 // Structured intent recognition from natural language queries
 export interface QueryIntent {
-  type: 'squad_analysis' | 'chip_strategy' | 'transfer_suggestions' | 'player_comparison' | 'fixture_analysis' | 'general_advice';
+  type: 'squad_analysis' | 'chip_strategy' | 'transfer_suggestions' | 'player_comparison' | 'fixture_analysis' | 'player_advice' | 'general_advice';
   entities: {
     players?: string[];
     teams?: string[];

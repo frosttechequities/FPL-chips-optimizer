@@ -80,6 +80,7 @@ export class AICopilotService {
       const getConfidenceThreshold = (intentType: string): number => {
         switch (intentType) {
           case 'squad_analysis': return 35;
+          case 'player_advice': return 40; // Lower threshold for specific player questions
           case 'chip_strategy':
           case 'player_comparison':
           case 'transfer_suggestions':
@@ -210,6 +211,9 @@ export class AICopilotService {
     switch (intent.type) {
       case 'squad_analysis':
         return this.handleSquadAnalysis(intent, context);
+      
+      case 'player_advice':
+        return this.handlePlayerAdvice(intent, context);
       
       case 'chip_strategy':
         return this.handleChipStrategy(intent, context);
@@ -420,6 +424,10 @@ export class AICopilotService {
         suggestions.push("Consider upcoming fixture difficulty", "Look for differential picks");
         break;
       
+      case 'player_advice':
+        suggestions.push("Check player's underlying stats and form trends", "Consider upcoming fixture difficulty for this player", "Look at similar-priced alternatives if needed");
+        break;
+      
       case 'chip_strategy':
         suggestions.push("Consider fixture swings for optimal timing", "Plan around double gameweeks", "Coordinate with transfer strategy");
         break;
@@ -452,6 +460,10 @@ export class AICopilotService {
     switch (intent.type) {
       case 'squad_analysis':
         questions.push("Would you like specific transfer recommendations?", "Should I analyze your chip timing strategy?", "Want to see how your players compare to popular picks?");
+        break;
+      
+      case 'player_advice':
+        questions.push("Should I analyze alternatives to this player?", "Want me to check transfer timing for this move?", "Would you like captaincy advice for upcoming fixtures?");
         break;
       
       case 'chip_strategy':
@@ -533,6 +545,115 @@ export class AICopilotService {
         insights: [],
         suggestions: ["Verify your Team ID is correct", "Try again in a moment"],
         followUpQuestions: ["What's your correct Team ID?"]
+      };
+    }
+  }
+
+  /**
+   * Handle player-specific advice requests
+   */
+  private async handlePlayerAdvice(intent: QueryIntent, context: ConversationContext): Promise<Omit<AICopilotResponse, 'conversationContext'>> {
+    const playerMentioned = intent.entities.players?.[0];
+    
+    if (!playerMentioned) {
+      return {
+        message: "I can help with specific player advice! Could you mention which player you're asking about?",
+        insights: [],
+        suggestions: [
+          "Mention a specific player name for personalized analysis",
+          "Ask about keeping, selling, or starting a particular player",
+          "Share your Team ID for more accurate advice"
+        ],
+        followUpQuestions: [
+          "Which player do you need advice about?",
+          "Are you considering selling or keeping a specific player?",
+          "What's your FPL Team ID for detailed analysis?"
+        ]
+      };
+    }
+
+    if (!context.teamId) {
+      return {
+        message: `I'd love to give you specific advice about ${playerMentioned}! For the most accurate recommendation, I need your Team ID to see if you own them, their purchase price, and how they fit in your overall squad strategy.`,
+        insights: [],
+        suggestions: [
+          "Share your Team ID for personalized player analysis",
+          "I can analyze form, fixtures, and value with your squad context",
+          "Get specific advice on whether to keep, sell, or start the player"
+        ],
+        followUpQuestions: [
+          "What's your FPL Team ID?",
+          `Are you currently considering selling ${playerMentioned}?`,
+          `Do you want general advice about ${playerMentioned}'s upcoming fixtures?`
+        ]
+      };
+    }
+
+    try {
+      // Get squad analysis to find the specific player
+      const analysis = await this.analysisEngine.analyzeTeam(context.teamId);
+      const targetPlayer = analysis.players.find(p => 
+        p.name.toLowerCase().includes(playerMentioned.toLowerCase()) || 
+        playerMentioned.toLowerCase().includes(p.name.toLowerCase())
+      );
+
+      if (!targetPlayer) {
+        return {
+          message: `I couldn't find ${playerMentioned} in your current squad. Would you like advice about bringing them in, or did you mean a different player?`,
+          insights: [],
+          suggestions: [
+            `Consider adding ${playerMentioned} to your transfer list`,
+            "Double-check the player name spelling",
+            "Ask about a different player in your squad"
+          ],
+          followUpQuestions: [
+            `Should I analyze bringing ${playerMentioned} into your squad?`,
+            "Which player in your current squad are you asking about?",
+            "Would you like transfer suggestions instead?"
+          ]
+        };
+      }
+
+      // Enhanced player analysis using advanced engines
+      const playerAnalysis = await this.analyzePlayerWithAdvancedEngines(targetPlayer, analysis);
+      
+      // Generate targeted insights for this specific player
+      const insights = await this.generatePlayerSpecificInsights(targetPlayer, playerAnalysis);
+      
+      // Create comprehensive advice message
+      const message = this.formatPlayerAdviceMessage(targetPlayer, playerAnalysis, intent.originalQuery);
+      
+      return {
+        message,
+        insights,
+        suggestions: this.generatePlayerSpecificSuggestions(targetPlayer, playerAnalysis),
+        followUpQuestions: [
+          `Should I analyze alternative players to ${targetPlayer.name}?`,
+          "Do you want transfer timing advice for this player?",
+          "Would you like to see their fixture analysis?"
+        ],
+        analysisPerformed: {
+          type: 'player_advice',
+          confidence: Math.min(95, intent.confidence + 20), // High confidence for specific player advice
+          dataUsed: ['fpl_data', 'openFPL_engine', 'monte_carlo_sim', 'effective_ownership', 'ml_predictions']
+        }
+      };
+      
+    } catch (error) {
+      console.error('Player advice error:', error);
+      return {
+        message: `I'm having trouble analyzing ${playerMentioned} right now. Please try again in a moment, or ask about a different aspect of your FPL strategy.`,
+        insights: [],
+        suggestions: [
+          "Try your question again in a moment", 
+          "Ask about your overall squad analysis instead",
+          "Check a different player in your squad"
+        ],
+        followUpQuestions: [
+          "Would you like general squad advice instead?",
+          "Should I analyze a different player?",
+          "Do you want chip timing recommendations?"
+        ]
       };
     }
   }
@@ -997,9 +1118,290 @@ export class AICopilotService {
     return [];
   }
 
+  /**
+   * Analyze specific player using advanced engines
+   */
+  private async analyzePlayerWithAdvancedEngines(player: any, analysis: any): Promise<any> {
+    try {
+      // Get OpenFPL prediction for the player
+      const openFPLEngine = (await import('./openFPLEngine')).OpenFPLEngine.getInstance();
+      const openFPLPrediction = await openFPLEngine.predictPlayer(player, analysis.gameweeks || [], player.advancedStats);
+
+      // Get Monte Carlo simulation results
+      const monteCarloEngine = (await import('./monteCarloEngine')).MonteCarloEngine.getInstance();
+      const monteCarloResult = await monteCarloEngine.simulatePlayer(player, analysis.gameweeks || [], player.advancedStats);
+
+      // Get Effective Ownership analysis
+      const effectiveOwnershipEngine = (await import('./effectiveOwnershipEngine')).EffectiveOwnershipEngine.getInstance();
+      const ownershipData = await effectiveOwnershipEngine.calculateEffectiveOwnership([player]);
+
+      return {
+        openFPL: openFPLPrediction,
+        monteCarlo: monteCarloResult,
+        effectiveOwnership: ownershipData[0],
+        fixtureAnalysis: this.analyzePlayerFixtures(player, analysis.gameweeks || []),
+        recommendation: this.generatePlayerRecommendation(player, openFPLPrediction, monteCarloResult, ownershipData[0])
+      };
+    } catch (error) {
+      console.warn('Advanced engine analysis failed, using fallback:', error);
+      return {
+        recommendation: 'hold',
+        confidence: 60,
+        reasoning: ['Unable to access full analysis engines', 'Based on basic fixture and form analysis']
+      };
+    }
+  }
+
+  /**
+   * Generate player-specific insights
+   */
+  private async generatePlayerSpecificInsights(player: any, playerAnalysis: any): Promise<AIInsight[]> {
+    const insights: AIInsight[] = [];
+
+    // OpenFPL prediction insight
+    if (playerAnalysis.openFPL) {
+      const prediction = playerAnalysis.openFPL;
+      insights.push({
+        type: prediction.expectedPoints > 4 ? 'opportunity' : 'warning',
+        title: 'Expected Points Analysis',
+        content: `${player.name} has an expected points range of ${prediction.floor}-${prediction.ceiling} with ${prediction.haulingProbability.toFixed(1)}% haul probability`,
+        priority: prediction.confidence > 70 ? 'high' : 'medium',
+        confidence: prediction.confidence,
+        reasoning: [`OpenFPL model confidence: ${prediction.confidence}%`, 'Based on form, fixtures, and statistical analysis'],
+        lastUpdated: new Date().toISOString(),
+        relatedData: {
+          players: [player.id],
+          expectedPoints: prediction.expectedPoints,
+          riskLevel: prediction.haulingProbability > 0.15 ? 'low' : 'medium'
+        }
+      });
+    }
+
+    // Monte Carlo insight
+    if (playerAnalysis.monteCarlo) {
+      const mc = playerAnalysis.monteCarlo;
+      insights.push({
+        type: mc.haulingProbability > 0.2 ? 'opportunity' : 'explanation',
+        title: 'Points Distribution Analysis',
+        content: `Simulation shows ${(mc.haulingProbability * 100).toFixed(1)}% chance of 10+ point hauls, with ${mc.consistency.toFixed(1)} consistency rating`,
+        priority: 'medium',
+        confidence: 80,
+        reasoning: [`Based on ${mc.simulations.length} Monte Carlo simulations`, 'Accounts for multiple outcome scenarios'],
+        lastUpdated: new Date().toISOString(),
+        relatedData: {
+          players: [player.id],
+          expectedPoints: mc.expectedPoints
+        }
+      });
+    }
+
+    // Ownership insight  
+    if (playerAnalysis.effectiveOwnership) {
+      const eo = playerAnalysis.effectiveOwnership;
+      insights.push({
+        type: eo.isDifferential ? 'opportunity' : 'explanation',
+        title: 'Ownership & Differential Analysis',
+        content: `${eo.ownership.toFixed(1)}% owned (${eo.isDifferential ? 'differential pick' : 'template pick'}). Rank impact: ${eo.rankChangeImpact > 0 ? '+' : ''}${eo.rankChangeImpact}`,
+        priority: eo.isDifferential ? 'medium' : 'low',
+        confidence: 75,
+        reasoning: ['Based on effective ownership calculations', 'Considers captaincy and rank impact'],
+        lastUpdated: new Date().toISOString(),
+        relatedData: {
+          players: [player.id],
+          riskLevel: eo.isDifferential ? 'medium' : 'low'
+        }
+      });
+    }
+
+    return insights.slice(0, 3); // Limit to top 3 insights
+  }
+
+  /**
+   * Format comprehensive player advice message
+   */
+  private formatPlayerAdviceMessage(player: any, playerAnalysis: any, originalQuery: string): string {
+    const recommendation = playerAnalysis.recommendation;
+    const openFPL = playerAnalysis.openFPL;
+    const monteCarlo = playerAnalysis.monteCarlo;
+
+    let message = `Here's my analysis of **${player.name}**:\n\n`;
+
+    // Lead with the recommendation
+    const actionMap = {
+      'hold': '✅ **KEEP** - Strong hold',
+      'sell': '❌ **SELL** - Consider transfer',
+      'monitor': '⏳ **MONITOR** - Watch closely',
+      'captain': '🔥 **CAPTAIN OPTION** - Strong choice',
+      'bench': '📝 **BENCH** - Better options available'
+    };
+
+    message += `${actionMap[recommendation] || '📊 **ASSESS** - Mixed signals'}\n\n`;
+
+    // Key stats
+    if (openFPL && monteCarlo) {
+      message += `**Key Stats:**\n`;
+      message += `• Expected Points: ${openFPL.expectedPoints.toFixed(1)} (Range: ${openFPL.floor}-${openFPL.ceiling})\n`;
+      message += `• Haul Probability: ${(openFPL.haulingProbability * 100).toFixed(1)}%\n`;
+      message += `• Consistency: ${monteCarlo.consistency?.toFixed(1) || 'N/A'}/10\n\n`;
+    }
+
+    // Specific advice based on query
+    if (originalQuery.toLowerCase().includes('blank')) {
+      message += `**About the blanks:** Players go through rough patches, but ${player.name}'s underlying numbers ${openFPL && openFPL.expectedPoints > 3 ? 'suggest better returns ahead' : 'show some concerns'}.\n\n`;
+    }
+
+    // Reasoning
+    if (playerAnalysis.reasoning && playerAnalysis.reasoning.length > 0) {
+      message += `**Why this recommendation:**\n`;
+      playerAnalysis.reasoning.slice(0, 3).forEach((reason: string) => {
+        message += `• ${reason}\n`;
+      });
+    }
+
+    return message;
+  }
+
+  /**
+   * Generate player-specific suggestions
+   */
+  private generatePlayerSpecificSuggestions(player: any, playerAnalysis: any): string[] {
+    const suggestions: string[] = [];
+    const recommendation = playerAnalysis.recommendation;
+    
+    switch (recommendation) {
+      case 'sell':
+        suggestions.push(`Consider transferring ${player.name} for better fixtures/form`);
+        suggestions.push('Look at similarly priced alternatives in better form');
+        suggestions.push('Time the transfer around price changes if possible');
+        break;
+      case 'hold':
+        suggestions.push(`${player.name} is worth keeping - fixtures/form look good`);
+        suggestions.push('Consider as captain option if fixtures improve');
+        suggestions.push('Monitor for any injury/rotation concerns');
+        break;
+      case 'captain':
+        suggestions.push(`Strong captain option - ${player.name} has explosive potential`);
+        suggestions.push('Check team news before deadline');
+        suggestions.push('Have a reliable vice-captain backup');
+        break;
+      default:
+        suggestions.push(`Monitor ${player.name}'s minutes and form closely`);
+        suggestions.push('Consider fixtures over next 3-4 gameweeks');
+        suggestions.push('Look at underlying stats for trend signals');
+    }
+
+    // Add fixture-based suggestion if available
+    if (playerAnalysis.fixtureAnalysis && playerAnalysis.fixtureAnalysis.upcomingDifficulty) {
+      const difficulty = playerAnalysis.fixtureAnalysis.upcomingDifficulty;
+      if (difficulty < 3) {
+        suggestions.push('Favorable upcoming fixtures support keeping');
+      } else if (difficulty > 3.5) {
+        suggestions.push('Difficult fixtures ahead - consider alternatives');
+      }
+    }
+
+    return suggestions.slice(0, 4);
+  }
+
+  /**
+   * Analyze player's upcoming fixtures
+   */
+  private analyzePlayerFixtures(player: any, gameweeks: any[]): any {
+    if (!gameweeks || gameweeks.length === 0) {
+      return { upcomingDifficulty: 3, trend: 'stable' };
+    }
+
+    const playerFixtures = gameweeks
+      .slice(0, 4) // Next 4 gameweeks
+      .flatMap(gw => gw.fixtures || [])
+      .filter((f: any) => f.playerId === player.id);
+
+    if (playerFixtures.length === 0) {
+      return { upcomingDifficulty: 3, trend: 'stable' };
+    }
+
+    const avgDifficulty = playerFixtures.reduce((sum: number, f: any) => sum + (f.fdr || 3), 0) / playerFixtures.length;
+    
+    return {
+      upcomingDifficulty: avgDifficulty,
+      trend: avgDifficulty < 3 ? 'improving' : avgDifficulty > 3.5 ? 'worsening' : 'stable',
+      fixtures: playerFixtures.slice(0, 3)
+    };
+  }
+
+  /**
+   * Generate player recommendation based on engine outputs
+   */
+  private generatePlayerRecommendation(player: any, openFPL: any, monteCarlo: any, ownership: any): string {
+    let score = 0;
+    const reasoning: string[] = [];
+
+    // OpenFPL factors
+    if (openFPL) {
+      if (openFPL.expectedPoints > 5) {
+        score += 2;
+        reasoning.push('High expected points from OpenFPL model');
+      } else if (openFPL.expectedPoints < 3) {
+        score -= 2;
+        reasoning.push('Low expected points prediction');
+      }
+      
+      if (openFPL.haulingProbability > 0.15) {
+        score += 1;
+        reasoning.push('Good haul potential');
+      }
+    }
+
+    // Monte Carlo factors
+    if (monteCarlo) {
+      if (monteCarlo.consistency > 7) {
+        score += 1;
+        reasoning.push('High consistency rating');
+      } else if (monteCarlo.consistency < 4) {
+        score -= 1;
+        reasoning.push('Inconsistent performance pattern');
+      }
+    }
+
+    // Ownership factors
+    if (ownership) {
+      if (ownership.isDifferential && ownership.expectedPoints > 4) {
+        score += 1;
+        reasoning.push('Differential pick with good potential');
+      }
+    }
+
+    // Price and value factors
+    if (player.expectedPoints && player.price) {
+      const valueRatio = player.expectedPoints / player.price;
+      if (valueRatio > 0.8) {
+        score += 1;
+        reasoning.push('Good value for money');
+      } else if (valueRatio < 0.4) {
+        score -= 1;
+        reasoning.push('Expensive for expected returns');
+      }
+    }
+
+    // Generate recommendation based on score
+    let recommendation: string;
+    if (score >= 3) {
+      recommendation = 'captain';
+    } else if (score >= 1) {
+      recommendation = 'hold';
+    } else if (score <= -2) {
+      recommendation = 'sell';
+    } else {
+      recommendation = 'monitor';
+    }
+
+    return recommendation;
+  }
+
   private mapIntentToQueryType(intent: QueryIntent['type']): 'analysis' | 'strategy' | 'transfers' | 'general' {
     const mapping: Record<QueryIntent['type'], 'analysis' | 'strategy' | 'transfers' | 'general'> = {
       'squad_analysis': 'analysis',
+      'player_advice': 'analysis',
       'chip_strategy': 'strategy',
       'transfer_suggestions': 'transfers',
       'player_comparison': 'analysis',

@@ -97,39 +97,44 @@ export class NaturalLanguageProcessor {
       return 'chip_strategy';
     }
     
-    // Rule 2: Player comparison - requires high-confidence player matches
-    if (tempEntities.players && tempEntities.players.length >= 2) {
+    // Rule 2: Player comparison - requires high-confidence player matches AND explicit comparison keywords
+    if (tempEntities.players && tempEntities.players.length >= 2 && this.hasComparisonKeywords(query)) {
       return 'player_comparison';
     }
     
-    // Only trigger comparison if explicit comparison keywords AND multiple noun-like tokens
-    if (this.hasComparisonKeywords(query) && this.hasMultipleNounLikeTokens(words)) {
-      return 'player_comparison';
+    // Rule 3: Player-specific questions - single player with specific question patterns
+    if (tempEntities.players && tempEntities.players.length === 1) {
+      if (this.hasPlayerSpecificKeywords(query)) {
+        return 'player_advice';
+      }
+      // Also detect questions about what to do with a specific player
+      if (this.hasPlayerActionKeywords(query)) {
+        return 'player_advice';
+      }
     }
     
-    // Rule 3: Transfer suggestions - transfer verbs OR budget + player/position
+    // Rule 4: Transfer suggestions - transfer verbs OR budget + player/position
     if (this.hasTransferKeywords(query) ||
         (tempEntities.budget && (tempEntities.players?.length || tempEntities.positions?.length))) {
       return 'transfer_suggestions';
     }
     
-    // Rule 4: Fixture analysis - fixture-related keywords
+    // Rule 5: Fixture analysis - fixture-related keywords
     if (this.hasFixtureKeywords(query)) {
       return 'fixture_analysis';
     }
     
-    // Rule 5: Player evaluation - any question about specific players should trigger squad analysis
-    if (tempEntities.players && tempEntities.players.length > 0) {
-      // Questions about specific players should use squad analysis for personalized advice
+    // Rule 6: Multiple players without comparison -> squad analysis
+    if (tempEntities.players && tempEntities.players.length > 1 && !this.hasComparisonKeywords(query)) {
       return 'squad_analysis';
     }
     
-    // Rule 6: Squad analysis - analyze/review squad/team keywords
+    // Rule 7: Squad analysis - analyze/review squad/team keywords
     if (this.hasSquadAnalysisKeywords(query)) {
       return 'squad_analysis';
     }
     
-    // Rule 7: Default to general advice only when no specific entities detected
+    // Rule 8: Default to general advice only when no specific entities detected
     return 'general_advice';
   }
 
@@ -232,6 +237,26 @@ export class NaturalLanguageProcessor {
            /(?:what|how)\s+(?:do\s+you\s+)?(?:think|feel)\s+about\s+.+?\s+in\s+my\s+(team|squad)/i.test(query) ||
            /(?:is|should)\s+.+?\s+(?:good|worth|worthwhile|worth\s+keeping)\s+(?:in|for)\s+my\s+(team|squad)/i.test(query) ||
            /(?:my\s+team|my\s+squad).*\w+/i.test(query);
+  }
+
+  /**
+   * Check for player-specific advisory keywords
+   */
+  private hasPlayerSpecificKeywords(query: string): boolean {
+    return /(?:what|should|do|about|worth|advice|opinion|thoughts?|recommendation)\b/i.test(query) &&
+           /(?:keeping|holding|selling|starting|benching|captaining|transferring|dropping)\b/i.test(query);
+  }
+
+  /**
+   * Check for player action keywords indicating user wants advice on specific player
+   */
+  private hasPlayerActionKeywords(query: string): boolean {
+    return /(?:what\s+(?:should\s+)?(?:i|do)\s+(?:do\s+)?(?:with|about))\b/i.test(query) ||
+           /(?:should\s+i\s+(?:keep|sell|start|bench|captain|transfer|drop))\b/i.test(query) ||
+           /(?:is\s+.+?\s+worth\s+(?:keeping|holding|starting))\b/i.test(query) ||
+           /(?:advice\s+(?:on|about|for))\b/i.test(query) ||
+           /(?:thoughts?\s+(?:on|about))\b/i.test(query) ||
+           /(?:blanking|performing|disappointing|underperforming)\b/i.test(query);
   }
 
   /**
@@ -480,6 +505,9 @@ export class NaturalLanguageProcessor {
       case 'player_comparison':
         if (this.hasComparisonKeywords(query)) confidence += 30;
         break;
+      case 'player_advice':
+        if (this.hasPlayerSpecificKeywords(query) || this.hasPlayerActionKeywords(query)) confidence += 45;
+        break;
       case 'transfer_suggestions':
         if (this.hasTransferKeywords(query)) confidence += 35;
         break;
@@ -544,6 +572,7 @@ export class NaturalLanguageProcessor {
       case 'squad_analysis': return this.hasSquadAnalysisKeywords(query);
       case 'chip_strategy': return this.hasExplicitChipKeywords(query);
       case 'player_comparison': return this.hasComparisonKeywords(query);
+      case 'player_advice': return this.hasPlayerSpecificKeywords(query) || this.hasPlayerActionKeywords(query);
       case 'transfer_suggestions': return this.hasTransferKeywords(query);
       case 'fixture_analysis': return this.hasFixtureKeywords(query);
       default: return false;
