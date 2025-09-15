@@ -1,4 +1,5 @@
 import { MatchOdds, TeamStrength } from "@shared/schema";
+import TheOddsAPI from 'the-odds-api';
 
 // Provider interface for different odds APIs
 export interface IOddsProvider {
@@ -50,6 +51,124 @@ class MockOddsProvider implements IOddsProvider {
   }
 }
 
+// Real TheOddsAPI provider for live betting odds
+class TheOddsAPIProvider implements IOddsProvider {
+  name = "theoddsapi";
+  private api: any;
+  private cache = new Map<string, any>();
+  private cacheExpiry = 5 * 60 * 1000; // 5 minutes for odds
+
+  constructor(apiKey: string) {
+    this.api = new TheOddsAPI(apiKey);
+  }
+
+  async getMatchOdds(fixtureId: number): Promise<MatchOdds | null> {
+    try {
+      // Get Premier League odds
+      const cacheKey = `epl_odds_${Date.now()}`;
+      const cached = this.cache.get(cacheKey);
+      
+      let oddsData;
+      if (cached && (Date.now() - cached.timestamp) < this.cacheExpiry) {
+        oddsData = cached.data;
+      } else {
+        const response = await this.api.getOdds({
+          sport: 'soccer_epl',
+          regions: 'uk',
+          markets: 'h2h,totals',
+          oddsFormat: 'decimal',
+          dateFormat: 'iso'
+        });
+        oddsData = response.data || response;
+        this.cache.set(cacheKey, { data: oddsData, timestamp: Date.now() });
+      }
+
+      // Find match by fixture ID (map to team names if possible)
+      const match = oddsData.find((game: any) => 
+        game.id && this.matchesFixture(game, fixtureId)
+      );
+
+      if (!match || !match.bookmakers || match.bookmakers.length === 0) {
+        return null;
+      }
+
+      // Get best odds from available bookmakers
+      const h2hMarket = match.bookmakers[0].markets.find((m: any) => m.key === 'h2h');
+      const totalsMarket = match.bookmakers[0].markets.find((m: any) => m.key === 'totals');
+      
+      if (!h2hMarket) return null;
+
+      const homeOdds = h2hMarket.outcomes.find((o: any) => o.name === match.home_team)?.price || 2.0;
+      const awayOdds = h2hMarket.outcomes.find((o: any) => o.name === match.away_team)?.price || 2.0;
+      const drawOdds = h2hMarket.outcomes.find((o: any) => o.name === 'Draw')?.price || 3.0;
+
+      // Calculate derived odds
+      const totalLine = totalsMarket?.outcomes[0]?.point || 2.5;
+      const overOdds = totalsMarket?.outcomes.find((o: any) => o.name === 'Over')?.price || 1.8;
+      const underOdds = totalsMarket?.outcomes.find((o: any) => o.name === 'Under')?.price || 2.0;
+
+      return {
+        fixtureId,
+        homeWin: homeOdds,
+        draw: drawOdds,
+        awayWin: awayOdds,
+        btts: 1.8, // Default - would need specialized market
+        over25Goals: overOdds,
+        under25Goals: underOdds,
+        homeCleanSheet: this.calculateCleanSheetOdds(homeOdds, totalLine),
+        awayCleanSheet: this.calculateCleanSheetOdds(awayOdds, totalLine),
+        homeGoalsOver15: this.calculateTeamGoalsOdds(homeOdds),
+        awayGoalsOver15: this.calculateTeamGoalsOdds(awayOdds),
+        lastUpdated: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error('TheOddsAPI error:', error);
+      return null;
+    }
+  }
+
+  private matchesFixture(game: any, fixtureId: number): boolean {
+    // Simple heuristic - would need better mapping in production
+    return game.id && (parseInt(game.id) % 1000) === (fixtureId % 1000);
+  }
+
+  private calculateCleanSheetOdds(winOdds: number, totalGoals: number): number {
+    // Estimate clean sheet probability from win odds and total goals
+    const winProb = 1 / winOdds;
+    const cleanSheetProb = winProb * (totalGoals < 2.5 ? 0.4 : 0.25);
+    return Math.round((1 / cleanSheetProb) * 100) / 100;
+  }
+
+  private calculateTeamGoalsOdds(winOdds: number): number {
+    // Estimate team scoring probability
+    const scoreProb = (1 / winOdds) * 0.7 + 0.3; // Teams usually score in 60-90% of games
+    return Math.round((1 / scoreProb) * 100) / 100;
+  }
+
+  async getMatchOddsBatch(fixtureIds: number[]): Promise<MatchOdds[]> {
+    const results: MatchOdds[] = [];
+    
+    // Get all current Premier League odds once
+    for (const fixtureId of fixtureIds) {
+      const odds = await this.getMatchOdds(fixtureId);
+      if (odds) {
+        results.push(odds);
+      }
+    }
+    
+    return results;
+  }
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      await this.api.getSports({ all: false });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 // Service class for odds management
 export class OddsService {
   private static instance: OddsService;
@@ -72,14 +191,16 @@ export class OddsService {
 
   private createProvider(providerName: string): IOddsProvider {
     switch (providerName.toLowerCase()) {
+      case 'theoddsapi':
+        const apiKey = process.env.THEODDSAPI_KEY;
+        if (!apiKey) {
+          console.warn('TheOddsAPI key not found, falling back to mock provider');
+          return new MockOddsProvider();
+        }
+        return new TheOddsAPIProvider(apiKey);
       case 'mock':
       default:
         return new MockOddsProvider();
-      // Future providers can be added here:
-      // case 'oddschecker':
-      //   return new OddsCheckerProvider(process.env.ODDSCHECKER_API_KEY!);
-      // case 'betfair':
-      //   return new BetfairProvider(process.env.BETFAIR_API_KEY!);
     }
   }
 

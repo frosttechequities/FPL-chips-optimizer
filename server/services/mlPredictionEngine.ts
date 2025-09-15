@@ -8,6 +8,8 @@
 import { HistoricalDataService } from './historicalDataService';
 import { StatsService } from './statsService';
 import { OddsService } from './oddsService';
+import { OpenFPLEngine } from './openFPLEngine';
+import { MonteCarloEngine } from './monteCarloEngine';
 import { MLPrediction, MLModelPerformance, ProcessedPlayer } from '@shared/schema';
 
 interface MLModel {
@@ -116,15 +118,19 @@ export class MLPredictionEngine {
   private historicalDataService: HistoricalDataService;
   private statsService: StatsService;
   private oddsService: OddsService;
+  private openFPLEngine: OpenFPLEngine;
+  private monteCarloEngine: MonteCarloEngine;
   private cache = new Map<string, MLPrediction>();
   private cacheExpiry = new Map<string, number>();
-  private readonly CACHE_DURATION = 60 * 60 * 1000; // 1 hour
+  private readonly CACHE_DURATION = 30 * 60 * 1000; // 30 minutes for enhanced predictions
 
   private constructor() {
     this.model = new EnsembleModel(); // Use ensemble for better accuracy
     this.historicalDataService = HistoricalDataService.getInstance();
     this.statsService = StatsService.getInstance();
     this.oddsService = OddsService.getInstance();
+    this.openFPLEngine = OpenFPLEngine.getInstance();
+    this.monteCarloEngine = MonteCarloEngine.getInstance();
   }
 
   public static getInstance(): MLPredictionEngine {
@@ -181,7 +187,7 @@ export class MLPredictionEngine {
   }
 
   /**
-   * Generate ML prediction for a single player
+   * Enhanced ML prediction using OpenFPL baseline and Monte Carlo simulation
    */
   private async predictSinglePlayer(
     player: ProcessedPlayer, 
@@ -189,33 +195,155 @@ export class MLPredictionEngine {
     advancedStats: any,
     gameweeks: number
   ): Promise<MLPrediction> {
-    // Extract features for ML prediction
-    const features = await this.extractMLFeatures(player, history, advancedStats);
+    try {
+      // Get baseline fixtures for prediction
+      const fixtures = [{ team_h: player.teamId, team_a: 1, difficulty: 3 }]; // Simplified fixture
+      
+      // Get OpenFPL baseline prediction
+      const openFPLPrediction = await this.openFPLEngine.predictPlayer(player, fixtures, advancedStats);
+      
+      // Get Monte Carlo simulation results
+      const monteCarloResult = await this.monteCarloEngine.simulatePlayer(player, fixtures, advancedStats);
+      
+      // Calculate player consistency (Coefficient of Variation)
+      const consistency = this.calculatePlayerConsistency(player, history);
+      
+      // Get legacy ML features
+      const features = await this.extractMLFeatures(player, history, advancedStats);
+      const legacyPrediction = this.model.predict(features);
+      
+      // Create enhanced ensemble prediction
+      const ensemble = this.createEnhancedEnsemble(
+        openFPLPrediction,
+        monteCarloResult,
+        legacyPrediction,
+        consistency
+      );
+      
+      // Adjust for multiple gameweeks
+      const totalPrediction = ensemble.expectedPoints * gameweeks;
+      
+      return {
+        playerId: player.id,
+        expectedPoints: totalPrediction,
+        confidence: ensemble.confidence,
+        floor: ensemble.floor * gameweeks,
+        ceiling: ensemble.ceiling * gameweeks,
+        modelVersion: 'enhanced-ensemble-v3.0',
+        features: {
+          ...ensemble.features,
+          form: features[0] || 0,
+          fixtures: features[1] || 0,
+          price: features[2] || 0,
+          ownership: features[3] || 0,
+          historical: features[4] || 0,
+        },
+        lastUpdated: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error(`Enhanced prediction failed for player ${player.id}, falling back to legacy:`, error);
+      
+      // Fallback to legacy prediction
+      const features = await this.extractMLFeatures(player, history, advancedStats);
+      const { prediction, confidence } = this.model.predict(features);
+      
+      return {
+        playerId: player.id,
+        expectedPoints: prediction * gameweeks,
+        confidence,
+        floor: Math.max(0, prediction * gameweeks - 2),
+        ceiling: prediction * gameweeks + 3,
+        modelVersion: 'legacy-fallback-v1.0',
+        features: {
+          form: features[0] || 0,
+          fixtures: features[1] || 0,
+          price: features[2] || 0,
+          ownership: features[3] || 0,
+          historical: features[4] || 0,
+        },
+        lastUpdated: new Date().toISOString()
+      };
+    }
+  }
+  
+  private createEnhancedEnsemble(
+    openFPLPrediction: any,
+    monteCarloResult: any,
+    legacyPrediction: any,
+    consistency: any
+  ): any {
+    // Weighted ensemble of predictions
+    const predictions = [
+      { prediction: openFPLPrediction.expectedPoints, confidence: openFPLPrediction.confidence, weight: 0.4 },
+      { prediction: monteCarloResult.expectedPoints, confidence: 85, weight: 0.35 },
+      { prediction: legacyPrediction.prediction, confidence: legacyPrediction.confidence, weight: 0.25 }
+    ];
     
-    // Get ML prediction
-    const { prediction, confidence } = this.model.predict(features);
+    const weightedPrediction = predictions.reduce((sum, pred) => sum + (pred.prediction * pred.weight), 0);
     
-    // Calculate risk factors
-    const riskFactors = this.calculateRiskFactors(player, history, advancedStats);
+    // Enhanced confidence calculation
+    const modelAgreement = this.calculateModelAgreement(predictions.map(p => p.prediction));
+    const consistencyBonus = consistency.isConsistent ? 10 : 0;
+    const overallConfidence = Math.min(95, 65 + modelAgreement * 25 + consistencyBonus);
     
-    // Adjust prediction for gameweeks (currently predicts per gameweek)
-    const totalPrediction = prediction * gameweeks;
-
     return {
-      playerId: player.id,
-      predictedPoints: totalPrediction,
-      confidence,
-      modelVersion: 'ensemble-v1.0',
+      expectedPoints: Math.round(weightedPrediction * 100) / 100,
+      confidence: Math.round(overallConfidence),
+      floor: monteCarloResult.percentiles?.p10 || Math.max(0, weightedPrediction - 2),
+      ceiling: monteCarloResult.percentiles?.p90 || Math.min(20, weightedPrediction + 4),
       features: {
-        form: features[0] || 0,
-        fixtures: features[1] || 0,
-        price: features[2] || 0,
-        ownership: features[3] || 0,
-        historical: features[4] || 0,
-      },
-      riskFactors,
-      lastUpdated: new Date().toISOString()
+        consistency: consistency.coefficientOfVariation,
+        haulingProbability: monteCarloResult.haulingProbability,
+        playerArchetype: consistency.archetype,
+        openFPLConfidence: openFPLPrediction.confidence,
+        monteCarloStdDev: monteCarloResult.standardDeviation
+      }
     };
+  }
+  
+  private calculatePlayerConsistency(player: ProcessedPlayer, history: any[]): any {
+    const recentHistory = history.find(h => h.season === '2023-24');
+    const recentGameweeks = recentHistory?.gameweeks?.slice(-10) || [];
+    
+    if (recentGameweeks.length < 5) {
+      return {
+        coefficientOfVariation: 0.5,
+        isConsistent: false,
+        archetype: 'unknown'
+      };
+    }
+    
+    const points = recentGameweeks.map((gw: any) => gw.points || 0);
+    const mean = points.reduce((sum: number, p: number) => sum + p, 0) / points.length;
+    const variance = points.reduce((sum: number, p: number) => sum + Math.pow(p - mean, 2), 0) / points.length;
+    const standardDeviation = Math.sqrt(variance);
+    
+    const coefficientOfVariation = mean > 0 ? standardDeviation / mean : 1;
+    
+    let archetype = 'balanced';
+    if (coefficientOfVariation < 0.3) {
+      archetype = 'consistent';
+    } else if (coefficientOfVariation > 0.7) {
+      archetype = 'explosive';
+    }
+    
+    return {
+      coefficientOfVariation: Math.round(coefficientOfVariation * 1000) / 1000,
+      isConsistent: coefficientOfVariation < 0.5,
+      archetype,
+      mean: Math.round(mean * 100) / 100,
+      standardDeviation: Math.round(standardDeviation * 100) / 100
+    };
+  }
+  
+  private calculateModelAgreement(predictions: number[]): number {
+    if (predictions.length < 2) return 0.5;
+    
+    const mean = predictions.reduce((sum, pred) => sum + pred, 0) / predictions.length;
+    const variance = predictions.reduce((sum, pred) => sum + Math.pow(pred - mean, 2), 0) / predictions.length;
+    const standardDeviation = Math.sqrt(variance);
+    
+    return Math.max(0, 1 - (standardDeviation / 5));
   }
 
   /**
