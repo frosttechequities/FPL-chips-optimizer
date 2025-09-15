@@ -64,8 +64,8 @@ class TheOddsAPIProvider implements IOddsProvider {
 
   async getMatchOdds(fixtureId: number): Promise<MatchOdds | null> {
     try {
-      // Get Premier League odds
-      const cacheKey = `epl_odds_${Date.now()}`;
+      // Get Premier League odds (cache by 10-minute buckets)
+      const cacheKey = `epl_odds_${Math.floor(Date.now() / (10 * 60 * 1000))}`;
       const cached = this.cache.get(cacheKey);
       
       let oddsData;

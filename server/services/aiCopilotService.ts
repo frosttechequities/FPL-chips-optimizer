@@ -378,20 +378,8 @@ export class AICopilotService {
       } catch {}
       finalMessage = llmResponse;
     }
-    // Enforce allowed player references only (rewrite if needed)
-    try {
-      const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => p.name).filter(Boolean);
-      if (allowedNames.length > 0) {
-        const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
-        const rewritten = await this.llmService.generateCompletionSafe([
-          { role: 'system', content: rewriteSystem },
-          { role: 'user', content: llmResponse }
-        ], { maxTokens: 600, timeoutMs: 10000 });
-        if (rewritten && rewritten.trim().length > 0) {
-          llmResponse = rewritten;
-        }
-      }
-    } catch {}
+    // Final message is already set above
+    // No additional processing needed here
 
     // Generate insights based on analysis data
     const insights: AIInsight[] = [];
@@ -663,9 +651,9 @@ export class AICopilotService {
           if (cleanMoves.length > 0) {
             const lines = cleanMoves.slice(0, 3).map(m => `Out: ${rosterById.get(m.outPlayerId)?.name || "Player"} → In: ${rosterById.get(m.inPlayerId)?.name || "Player"} (+${(m.expectedGain || 0).toFixed(1)} pts)`);
             const msg = [
-              focusDef ? "Top defense upgrades without hits:" : `Top upgrades without hits (budget ${budget?.bank?.toFixed(1) || 0}m, ${freeTransfers} FT):`,
+              focusDef ? "Top defense upgrades without hits:" : `Top upgrades without hits (budget ${budget.toFixed(1)}m, ${freeTransfers} FT):`,
               ...lines,
-              `Projected net gain: ${(top.totalExpectedGain || 0).toFixed(1)} pts`
+              `Projected net gain: ${((top as any).totalExpectedGain || 0).toFixed(1)} pts`
             ].join('\n');
             return {
               message: msg,

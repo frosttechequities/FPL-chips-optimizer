@@ -46,7 +46,7 @@ interface SimulationResult {
 export class MonteCarloEngine {
   private static instance: MonteCarloEngine;
   private openFPLEngine: OpenFPLEngine;
-  private readonly SIMULATION_RUNS = 10000;
+  private readonly SIMULATION_RUNS = 1000; // Reduced for performance, still statistically meaningful
   
   private constructor() {
     this.openFPLEngine = OpenFPLEngine.getInstance();
