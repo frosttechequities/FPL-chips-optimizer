@@ -231,12 +231,16 @@ export class MLPredictionEngine {
         ceiling: ensemble.ceiling * gameweeks,
         modelVersion: 'enhanced-ensemble-v3.0',
         features: {
-          ...ensemble.features,
           form: features[0] || 0,
           fixtures: features[1] || 0,
           price: features[2] || 0,
           ownership: features[3] || 0,
           historical: features[4] || 0,
+        },
+        riskFactors: {
+          injuryRisk: 0.1,
+          rotationRisk: 0.2,
+          priceDrop: 0.1
         },
         lastUpdated: new Date().toISOString()
       };
@@ -260,6 +264,11 @@ export class MLPredictionEngine {
           price: features[2] || 0,
           ownership: features[3] || 0,
           historical: features[4] || 0,
+        },
+        riskFactors: {
+          injuryRisk: 0.1,
+          rotationRisk: 0.2,
+          priceDrop: 0.1
         },
         lastUpdated: new Date().toISOString()
       };
@@ -450,6 +459,8 @@ export class MLPredictionEngine {
       playerId: player.id,
       predictedPoints: basicPrediction,
       confidence: 40, // Low confidence for fallback
+      floor: Math.max(0, basicPrediction - 2),
+      ceiling: basicPrediction + 3,
       modelVersion: 'fallback-v1.0',
       features: {
         form: 0.5,

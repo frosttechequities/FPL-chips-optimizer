@@ -155,6 +155,8 @@ export interface MLPrediction {
   playerId: number;
   predictedPoints: number;
   confidence: number; // 0-100 confidence in prediction
+  floor: number; // 10th percentile prediction
+  ceiling: number; // 90th percentile prediction
   modelVersion: string;
   features: {
     form: number; // recent form factor
@@ -163,7 +165,7 @@ export interface MLPrediction {
     ownership: number; // ownership impact
     historical: number; // historical performance factor
   };
-  riskFactors: {
+  riskFactors?: {
     injuryRisk: number; // 0-1 probability of injury
     rotationRisk: number; // 0-1 probability of rotation
     priceDrop: number; // 0-1 probability of price decline
