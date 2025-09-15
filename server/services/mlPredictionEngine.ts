@@ -225,7 +225,7 @@ export class MLPredictionEngine {
       
       return {
         playerId: player.id,
-        expectedPoints: totalPrediction,
+        predictedPoints: totalPrediction,
         confidence: ensemble.confidence,
         floor: ensemble.floor * gameweeks,
         ceiling: ensemble.ceiling * gameweeks,
@@ -249,7 +249,7 @@ export class MLPredictionEngine {
       
       return {
         playerId: player.id,
-        expectedPoints: prediction * gameweeks,
+        predictedPoints: prediction * gameweeks,
         confidence,
         floor: Math.max(0, prediction * gameweeks - 2),
         ceiling: prediction * gameweeks + 3,
