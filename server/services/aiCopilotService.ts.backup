@@ -661,17 +661,17 @@ export class AICopilotService {
             }
           }
           if (cleanMoves.length > 0) {
-            const lines = cleanMoves.slice(0, 3).map(m => `Out: ${rosterById.get(m.outPlayerId)?.name || "Player"} â†’ In: ${rosterById.get(m.inPlayerId)?.name || "Player"} (+${(m.expectedGain || 0).toFixed(1)} pts)`);
+            const lines = cleanMoves.slice(0, 3).map(m => Out:  ? In:  (+ pts));
             const msg = [
-              focusDef ? "Top defense upgrades without hits:" : `Top upgrades without hits (budget ${budget?.bank?.toFixed(1) || 0}m, ${freeTransfers} FT):`,
+              focusDef ? 'Top defense upgrades without hits:' : Top upgrades without hits (budget £m,  FT):,
               ...lines,
-              `Projected net gain: ${(top.totalExpectedGain || 0).toFixed(1)} pts`
+              Projected net gain:  pts
             ].join('\n');
             return {
               message: msg,
               insights: [],
               suggestions: [
-                `Target GW with ${cleanMoves.length} upgrade(s)`,
+                Target GW with  upgrade(s),
                 'Avoid hits unless expected gain > 6 pts'
               ],
               followUpQuestions: [

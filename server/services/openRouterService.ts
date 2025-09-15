@@ -31,6 +31,23 @@ interface LLMMessage {
   content: string;
 }
 
+
+// Interface declarations for structured output
+interface StructuredFPLFixtureRef { 
+  gameweek: number; 
+  player: string; 
+  opponent: string; 
+  isHome: boolean; 
+  fdr: number; 
+}
+
+interface StructuredFPLResponse { 
+  recommendation: string; 
+  playersUsed: string[]; 
+  fixturesUsed: StructuredFPLFixtureRef[]; 
+  confidence: number; 
+}
+
 export class OpenRouterService {
   private static instance: OpenRouterService;
   private apiKey: string;
@@ -205,10 +222,6 @@ export class OpenRouterService {
   }
 
   // ---- Structured output path for near-bulletproof accuracy ----
-
-  interface StructuredFPLFixtureRef { gameweek: number; player: string; opponent: string; isHome: boolean; fdr: number }
-  interface StructuredFPLResponse { recommendation: string; playersUsed: string[]; fixturesUsed: StructuredFPLFixtureRef[]; confidence: number }
-
   private buildStructuredPrompt(fplContext: any, userQuery: string): { system: string; user: string } {
     const { intent, entities, squadData, liveFPLData } = fplContext;
     const allowedPlayers: string[] = (liveFPLData?.players || []).map((p: any) => p.name).filter(Boolean);
