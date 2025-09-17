@@ -7,6 +7,7 @@
         "dev": "cross-env NODE_ENV=development tsx server/index.ts",
         "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
         "start": "cross-env NODE_ENV=production node dist/index.js",
+        "test": "vitest run",
         "dev:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-open.ps1",
         "start:open": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-open.ps1",
         "check": "tsc",
@@ -109,6 +110,7 @@
         "tsx": "^4.20.5",
         "typescript": "^5.6.3",
         "vite": "^5.4.20",
+        "vitest": "^3.2.4",
         "wait-on": "^7.0.1"
     },
     "optionalDependencies": {

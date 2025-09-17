@@ -420,7 +420,11 @@ export class AnalysisEngine {
     });
   }
 
-  private findOptimalBenchBoost(gameweeks: GameweekFDR[]): ChipRecommendation | null {
+  // Public for testing purposes due to difficulties with mocking in the test environment.
+  public findOptimalBenchBoost(gameweeks: GameweekFDR[]): ChipRecommendation | null {
+    if (!gameweeks || gameweeks.length === 0) {
+      return null;
+    }
     // Find gameweek with lowest total FDR (best fixtures for full squad)
     const bestGW = gameweeks.reduce((best, current) => 
       current.totalFDR < best.totalFDR ? current : best
@@ -495,7 +499,11 @@ export class AnalysisEngine {
     };
   }
 
-  private findOptimalWildcard(gameweeks: GameweekFDR[]): ChipRecommendation | null {
+  // Public for testing purposes due to difficulties with mocking in the test environment.
+  public findOptimalWildcard(gameweeks: GameweekFDR[]): ChipRecommendation | null {
+    if (!gameweeks || gameweeks.length === 0) {
+      return null;
+    }
     // Look for difficult periods followed by easier fixtures
     const sortedByDifficulty = [...gameweeks].sort((a, b) => b.averageFDR - a.averageFDR);
     const hardestGW = sortedByDifficulty[0];
