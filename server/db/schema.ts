@@ -180,6 +180,7 @@ export type RawFplFixture = typeof rawFplFixtures.$inferSelect;
 export type RawUnderstatPlayer = typeof rawUnderstatPlayers.$inferSelect;
 export type PlayerFeaturesRow = typeof playerFeaturesLatest.$inferSelect;
 export type FixtureFeaturesRow = typeof fixtureFeaturesLatest.$inferSelect;
+export type PlayerSimulationRow = typeof playerSimulations.$inferSelect;
 export type ProviderStatusRow = typeof providerStatus.$inferSelect;
 export type CausalInsightRow = typeof causalInsights.$inferSelect;
 

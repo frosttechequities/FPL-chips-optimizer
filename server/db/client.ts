@@ -13,10 +13,10 @@ const currentDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(currentDir, "..", "..");
 const migrationsDir = join(projectRoot, "migrations");
 
-let pool: Pool | null = null;
+let pool: pg.Pool | null = null;
 let db: NodePgDatabase<typeof schema> | null = null;
 let memoryDb: IMemoryDb | null = null;
-let memoryPool: Pool | null = null;
+let memoryPool: pg.Pool | null = null;
 let loggedInMemoryWarning = false;
 
 function patchQueryMethod(target: any): void {
@@ -37,7 +37,7 @@ function patchQueryMethod(target: any): void {
   };
 }
 
-function ensureMemoryPool(): Pool {
+function ensureMemoryPool(): pg.Pool {
   if (memoryPool) {
     return memoryPool;
   }
@@ -74,17 +74,17 @@ function ensureMemoryPool(): Pool {
     return client;
   };
 
-  memoryPool = pgMemPool as unknown as Pool;
+  memoryPool = pgMemPool as unknown as pg.Pool;
 
   if (!loggedInMemoryWarning) {
     console.warn("[db] DATABASE_URL not set; using in-memory pg-mem database. Data will reset on restart.");
     loggedInMemoryWarning = true;
   }
 
-  return memoryPool;
+  return memoryPool!;
 }
 
-export function createDatabase(customPool?: Pool): NodePgDatabase<typeof schema> {
+export function createDatabase(customPool?: pg.Pool): NodePgDatabase<typeof schema> {
   if (customPool) {
     return drizzle(customPool, { schema, logger: process.env.DB_DEBUG === "true" });
   }

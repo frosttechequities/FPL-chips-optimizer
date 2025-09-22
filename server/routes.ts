@@ -16,12 +16,16 @@ import { TransferEngine } from "./services/transferEngine";
 import { AICopilotService } from "./services/aiCopilotService";
 import { ProviderStatusService } from "./services/providerStatusService";
 import { StrategyModelRegistry } from "./services/strategyModelRegistry";
+import { EffectiveOwnershipEngine } from "./services/effectiveOwnershipEngine";
+import { DataRepository } from "./services/repositories/dataRepository";
 
 const analysisEngine = new AnalysisEngine();
 const transferEngine = new TransferEngine();
 const aiCopilotService = AICopilotService.getInstance();
 const providerStatusService = ProviderStatusService.getInstance();
 const strategyRegistry = StrategyModelRegistry.getInstance();
+const effectiveOwnershipEngine = EffectiveOwnershipEngine.getInstance();
+const repository = DataRepository.getInstance();
 
 const STRATEGY_STATUSES: StrategyModelSummary['status'][] = ['active', 'staging', 'archived'];
 
@@ -350,6 +354,3 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
   return httpServer;
 }
-
-
-

@@ -391,6 +391,7 @@ export class MonteCarloEngine {
     const percentiles = {
       p10: this.calculatePercentile(sorted, 10),
       p25: this.calculatePercentile(sorted, 25),
+      p50: this.calculatePercentile(sorted, 50),
       p75: this.calculatePercentile(sorted, 75),
       p90: this.calculatePercentile(sorted, 90)
     };
@@ -416,6 +417,7 @@ export class MonteCarloEngine {
       percentiles: {
         p10: Math.round(percentiles.p10 * 100) / 100,
         p25: Math.round(percentiles.p25 * 100) / 100,
+        p50: Math.round(percentiles.p50 * 100) / 100,
         p75: Math.round(percentiles.p75 * 100) / 100,
         p90: Math.round(percentiles.p90 * 100) / 100
       },
@@ -423,7 +425,8 @@ export class MonteCarloEngine {
       ceilingProbability: Math.round(ceilingProbability * 1000) / 1000,
       floorProbability: Math.round(floorProbability * 1000) / 1000,
       captainEV: Math.round(captainEV * 100) / 100,
-      consistency: Math.round(consistency * 100) / 100
+      consistency: Math.round(consistency * 100) / 100,
+      runs: this.SIMULATION_RUNS
     };
   }
 
