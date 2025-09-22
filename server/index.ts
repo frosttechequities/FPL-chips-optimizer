@@ -1,6 +1,11 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { DataPipeline } from "./services/dataPipeline";
+
+if (!process.env.OPENROUTER_API_KEY) {
+  process.env.OPENROUTER_API_KEY = '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';
+}
 
 const app = express();
 app.use(express.json());
@@ -26,7 +31,7 @@ app.use((req, res, next) => {
       }
 
       if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
+        logLine = logLine.slice(0, 79) + "...";
       }
 
       log(logLine);
@@ -35,6 +40,18 @@ app.use((req, res, next) => {
 
   next();
 });
+
+let dataPipeline: DataPipeline | null = null;
+try {
+  dataPipeline = DataPipeline.getInstance();
+  dataPipeline.initialise().catch(error => {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`[pipeline] bootstrap error: ${message}`);
+  });
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  log(`[pipeline] disabled: ${message}`);
+}
 
 (async () => {
   const server = await registerRoutes(app);
@@ -47,24 +64,23 @@ app.use((req, res, next) => {
     throw err;
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || '5000', 10);
+  const port = parseInt(process.env.PORT || "5000", 10);
   server.listen({
     port,
     host: "0.0.0.0",
   }, () => {
     log(`serving on port ${port}`);
+    if (dataPipeline) {
+      const lastRun = dataPipeline.getLastRun();
+      if (lastRun) {
+        log(`[pipeline] last run (${lastRun.trigger}) at ${lastRun.completedAt.toISOString()} in ${lastRun.durationMs}ms`);
+      }
+    }
   });
 })();

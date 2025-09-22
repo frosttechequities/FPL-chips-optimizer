@@ -10,6 +10,7 @@ import { AnalysisEngine } from './analysisEngine';
 import { MLPredictionEngine } from './mlPredictionEngine';
 import { TransferEngine } from './transferEngine';
 import { CompetitiveIntelligenceEngine } from './competitiveIntelligenceEngine';
+import { StrategyAgent } from './strategyAgent';
 import { OpenRouterService } from './openRouterService';
 import { 
   ChatMessage, 
@@ -31,16 +32,19 @@ export class AICopilotService {
   private analysisEngine: AnalysisEngine;
   private mlEngine: MLPredictionEngine;
   private competitiveEngine: CompetitiveIntelligenceEngine;
+  private strategyAgent: StrategyAgent;
   private llmService: OpenRouterService;
   private transferEngine: TransferEngine;
   private sessions = new Map<string, ConversationSession>();
   private readonly SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+  private readonly ANALYSIS_CACHE_TTL_MS = 5 * 60 * 1000; // reuse fresh analysis within 5 minutes
 
   private constructor() {
     this.nlProcessor = NaturalLanguageProcessor.getInstance();
     this.analysisEngine = new AnalysisEngine();
     this.mlEngine = MLPredictionEngine.getInstance();
     this.competitiveEngine = CompetitiveIntelligenceEngine.getInstance();
+    this.strategyAgent = StrategyAgent.getInstance();
     this.llmService = OpenRouterService.getInstance();
     this.transferEngine = new TransferEngine();
     
@@ -246,7 +250,29 @@ export class AICopilotService {
     try {
       // Always get fresh analysis data to prevent hallucinations
       if (context.teamId) {
-        analysisData = await this.analysisEngine.analyzeTeam(context.teamId);
+        const now = Date.now();
+        const cache = context.currentAnalysis;
+        if (cache && cache.teamId === context.teamId && cache.teamData) {
+          const last = cache.lastAnalyzed ? Date.parse(cache.lastAnalyzed) : 0;
+          if (last && now - last < this.ANALYSIS_CACHE_TTL_MS) {
+            analysisData = cache.teamData;
+          }
+        }
+
+        if (!analysisData) {
+          analysisData = await this.analysisEngine.analyzeTeam(context.teamId);
+          context.currentAnalysis = {
+            ...(cache || {}),
+            teamId: context.teamId,
+            teamData: analysisData,
+            lastAnalyzed: new Date(now).toISOString()
+          };
+        }
+
+        if (context.currentAnalysis) {
+          this.updateSession(context.sessionId, context);
+        }
+
         squadData = {
           teamValue: analysisData.budget?.teamValue || 100,
           bank: analysisData.budget?.bank || 0,
@@ -254,8 +280,8 @@ export class AICopilotService {
           teamName: analysisData.teamName || 'Your team'
         };
         recommendations = analysisData.recommendations || [];
-        
-        // Extract live player data for context
+
+        // Extract live player data for context with enhanced details
         liveFPLData = {
           players: analysisData.players?.slice(0, 15).map((p: any) => ({
             name: p.name,
@@ -266,15 +292,38 @@ export class AICopilotService {
             expectedPoints: p.expectedPoints,
             form: p.volatility || 0,
             isStarter: p.isStarter,
-            isBench: p.isBench
+            isBench: p.isBench,
+            // Enhanced stats for better AI context
+            totalPoints: p.totalPoints || p.points,
+            goals: p.goals || 0,
+            assists: p.assists || 0,
+            cleanSheets: p.cleanSheets || 0,
+            bonusPoints: p.bonusPoints || 0,
+            priceChange: p.priceChange || 0,
+            ownership: p.ownership || 0,
+            // Recent form data
+            recentForm: p.recentForm || [],
+            // Fixture difficulty for next 3 gameweeks
+            upcomingFDR: p.upcomingFDR || [],
+            // Value metrics
+            valueScore: p.valueScore || 0,
+            pointsPerMillion: p.pointsPerMillion || 0
           })) || [],
           nextFixtures: analysisData.gameweeks?.slice(0, 3).map((gw: any) => ({
             gameweek: gw.gameweek,
             difficulty: gw.difficulty,
             averageFDR: gw.averageFDR,
-            keyFixtures: gw.fixtures?.slice(0, 5).map((f: any) => 
-              `${f.playerName} vs ${f.opponent} (${f.isHome ? 'H' : 'A'}, FDR: ${f.fdr})`
-            ) || []
+            keyFixtures: gw.fixtures?.slice(0, 5).map((f: any) => ({
+              player: f.playerName,
+              opponent: f.opponent,
+              isHome: f.isHome,
+              fdr: f.fdr,
+              gameweek: gw.gameweek
+            })) || [],
+            // Additional fixture context
+            totalFixtures: gw.fixtures?.length || 0,
+            homeFixtures: gw.fixtures?.filter((f: any) => f.isHome).length || 0,
+            awayFixtures: gw.fixtures?.filter((f: any) => !f.isHome).length || 0
           })) || [],
           chipRecommendations: recommendations.slice(0, 3).map((r: any) => ({
             chip: r.chipType,
@@ -282,7 +331,19 @@ export class AICopilotService {
             priority: r.priority,
             reasoning: r.reasoning?.slice(0, 2) || [],
             confidence: r.confidence || 0
-          }))
+          })),
+          // Additional context for better AI responses
+          currentGameweek: analysisData.currentGameweek || 1,
+          seasonProgress: analysisData.seasonProgress || 0,
+          teamRank: analysisData.teamRank || 0,
+          overallRank: analysisData.overallRank || 0,
+          // Transfer budget context
+          transferBudget: analysisData.budget?.bank || 0,
+          freeTransfers: analysisData.budget?.freeTransfers || 1,
+          // Key insights for AI
+          keyInsights: analysisData.insights?.slice(0, 5) || [],
+          // Recent performance trends
+          recentPerformance: analysisData.recentPerformance || {}
         };
       } else {
         // No Team ID available - return data request message instead of proceeding
@@ -331,56 +392,61 @@ export class AICopilotService {
     // Get the user's current query
     const currentQuery = context.messages[context.messages.length - 1]?.content || intent.originalQuery;
 
-    // Structured path first (preferred)
-    const structured = await this.llmService.generateFPLStructuredResponse(
-      currentQuery,
-      { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
-      conversationHistory
-    );
+    // Try structured response first (preferred for accuracy) - be more aggressive about using it
+    const structuredStart = Date.now();
+    let structured: any = null;
+    let finalMessage: string = '';
+    const dataUsed: string[] = ['fpl_data'];
 
-    // Build allowed validation sets
-    const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => (p.name as string)).filter(Boolean);
-    const allowedNameSet = new Set(allowedNames.map(n => n.toLowerCase()));
-    const allowedFixturesSet = new Set<string>();
     try {
-      for (const gw of (analysisData?.gameweeks || [])) {
-        for (const f of (gw.fixtures || [])) {
-          const key = `${gw.gameweek}|${(f.playerName||'').toLowerCase()}|${(f.opponent||'').toLowerCase()}|${f.isHome?'H':'A'}|${Math.round(f.fdr||0)}`;
-          allowedFixturesSet.add(key);
-        }
-      }
-    } catch {}
-
-    let finalMessage: string;
-    if (structured) {
-      // Validate structured content
-      structured.playersUsed = (structured.playersUsed || []).filter((n: any) => typeof n === 'string' && allowedNameSet.has(n.toLowerCase()));
-      structured.fixturesUsed = (structured.fixturesUsed || []).filter((fx: any) => {
-        if (!fx || typeof fx.player !== 'string' || typeof fx.opponent !== 'string') return false;
-        const key = `${Math.round(fx.gameweek||0)}|${fx.player.toLowerCase()}|${fx.opponent.toLowerCase()}|${fx.isHome?'H':'A'}|${Math.round(fx.fdr||0)}`;
-        return allowedFixturesSet.has(key);
-      });
-      finalMessage = this.llmService.formatStructuredToText(structured);
-    } else {
-      // Fallback to free-form with sanitizer + rewrite enforcement
-      let llmResponse = await this.llmService.generateFPLResponse(
+      structured = await this.llmService.generateFPLStructuredResponse(
         currentQuery,
         { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
         conversationHistory
       );
+    } catch (error) {
+      console.warn('Structured response generation failed:', error);
+    }
+
+    const structuredMs = Date.now() - structuredStart;
+
+    // Use structured response if we have ANY valid data - be more aggressive
+    if (structured && structured.recommendation && structured.recommendation.trim().length > 5) {
+      console.log(`[AI Copilot] Using structured response (${structuredMs}ms)`);
+      dataUsed.push('llm_structured');
+      finalMessage = this.llmService.formatStructuredToText(
+        structured,
+        { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData }
+      );
+
+      // Use structured response even if it's short, as long as it's valid
+      if (finalMessage && finalMessage.length > 10) {
+        console.log(`[AI Copilot] Structured response successful (${finalMessage.length} chars)`);
+      } else {
+        console.log(`[AI Copilot] Structured response too short, trying free-form`);
+        structured = null; // Force fallback only if too short
+      }
+    } else {
+      console.log(`[AI Copilot] No valid structured response, using free-form`);
+    }
+
+    // Only fallback to free-form if structured completely failed
+    if (!structured || !finalMessage || finalMessage.length < 20) {
+      console.log(`[AI Copilot] Structured failed or too short, using free-form (${structuredMs}ms)`);
+      const freeformStart = Date.now();
       try {
-        if (allowedNames.length > 0) {
-          const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
-          const rewritten = await this.llmService.generateCompletionSafe([
-            { role: 'system', content: rewriteSystem },
-            { role: 'user', content: llmResponse }
-          ], { maxTokens: 600, timeoutMs: 10000 });
-          if (rewritten && rewritten.trim().length > 0) {
-            llmResponse = rewritten;
-          }
-        }
-      } catch {}
-      finalMessage = llmResponse;
+        finalMessage = await this.llmService.generateFPLResponse(
+          currentQuery,
+          { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
+          conversationHistory
+        );
+        const freeformMs = Date.now() - freeformStart;
+        console.log(`[AI Copilot] Free-form response generated (${freeformMs}ms, ${finalMessage.length} chars)`);
+        dataUsed.push('llm_text');
+      } catch (error) {
+        console.warn('Free-form LLM generation failed, using rule-based fallback:', error);
+        finalMessage = this.generateRuleBasedSummary({ analysisData, squadData }) || 'I apologize, but I\'m having trouble generating a response right now. Please try again.';
+      }
     }
     // Final message is already set above
     // No additional processing needed here
@@ -405,7 +471,7 @@ export class AICopilotService {
       analysisPerformed: analysisData ? {
         type: intent.type as any,
         confidence: Math.min(95, intent.confidence + 15), // Boost confidence for LLM responses
-        dataUsed: ['fpl_data', 'llm_analysis', 'simulation', 'ml_predictions', 'competitive_intelligence']
+        dataUsed: Array.from(new Set(dataUsed))
       } : undefined
     };
   }
@@ -719,6 +785,7 @@ export class AICopilotService {
   /**
    * Handle transfer suggestion requests
    */
+
   private async handleTransferSuggestions(intent: QueryIntent, context: ConversationContext): Promise<Omit<AICopilotResponse, 'conversationContext'>> {
     if (!context.teamId) {
       return {
@@ -737,84 +804,106 @@ export class AICopilotService {
       };
     }
 
+    const latestText = (context.messages[context.messages.length - 1]?.content || '').toLowerCase();
+    const focusDef = latestText.includes('defence') || latestText.includes('defence') || latestText.includes('def');
+
     try {
-      // Engine-backed transfer suggestions (strict non-owned; optional DEF focus)
-      try {
-        const latestText = (context.messages[context.messages.length - 1]?.content || '').toLowerCase();
-        const focusDef = latestText.includes('defence') || latestText.includes('defense') || latestText.includes('def');
-        const analysis = await this.analysisEngine.analyzeTeam(context.teamId);
-        const rosterById = new Map<number, any>((analysis.players || []).map((p: any) => [p.id, p]));
-        const ownedIds = new Set<number>((analysis.players || []).map((p: any) => p.id));
-        const budget = analysis.budget?.bank ?? 0;
-        const freeTransfers = analysis.budget?.freeTransfers ?? 1;
-        const gameweeks = analysis.gameweeks ?? [];
+      const analysis = await this.analysisEngine.analyzeTeam(context.teamId);
+      const rosterById = new Map<number, any>((analysis.players || []).map((p: any) => [p.id, p]));
+      const ownedIds = new Set<number>((analysis.players || []).map((p: any) => p.id));
+      const budget = analysis.budget?.bank ?? 0;
+      const freeTransfers = analysis.budget?.freeTransfers ?? 1;
+      const gameweeks = analysis.gameweeks ?? [];
 
-        const plans = await this.transferEngine.generateTransferPlans(
-          analysis.players,
-          budget,
-          freeTransfers,
-          { targetGameweek: gameweeks[0]?.gameweek ?? 1, chipType: undefined, maxHits: 0, includeRiskyMoves: false, gameweeks }
-        );
+      const plans = await this.transferEngine.generateTransferPlans(
+        analysis.players,
+        budget,
+        freeTransfers,
+        { targetGameweek: gameweeks[0]?.gameweek ?? 1, chipType: undefined, maxHits: 0, includeRiskyMoves: false, gameweeks }
+      );
 
-        let top = plans.find(p => p.moves.length > 0);
-        if (top) {
-          let cleanMoves = top.moves.filter(m => !ownedIds.has(m.inPlayerId));
+      let planMessage: string | null = null;
+      if (plans.length > 0) {
+        let topPlan = plans.find(p => p.moves.length > 0) ?? null;
+        if (topPlan) {
+          let cleanMoves = topPlan.moves.filter(m => !ownedIds.has(m.inPlayerId));
           if (focusDef) {
             cleanMoves = cleanMoves.filter(m => (rosterById.get(m.outPlayerId)?.position) === 'DEF');
           }
-          if (cleanMoves.length === 0 && plans.length > 1) {
+          if (cleanMoves.length === 0) {
             const alt = plans.slice(1).find(p => p.moves.some(m => !ownedIds.has(m.inPlayerId)));
             if (alt) {
-              top = alt;
-              cleanMoves = top.moves.filter(m => !ownedIds.has(m.inPlayerId) && (!focusDef || (rosterById.get(m.outPlayerId)?.position) === 'DEF'));
+              topPlan = alt;
+              cleanMoves = topPlan.moves.filter(m => !ownedIds.has(m.inPlayerId) && (!focusDef || (rosterById.get(m.outPlayerId)?.position) === 'DEF'));
             }
           }
           if (cleanMoves.length > 0) {
-            const lines = cleanMoves.slice(0, 3).map(m => `Out: ${rosterById.get(m.outPlayerId)?.name || "Player"} → In: ${rosterById.get(m.inPlayerId)?.name || "Player"} (+${(m.expectedGain || 0).toFixed(1)} pts)`);
-            const msg = [
-              focusDef ? "Top defense upgrades without hits:" : `Top upgrades without hits (budget ${budget.toFixed(1)}m, ${freeTransfers} FT):`,
+            const lines = cleanMoves.slice(0, 3).map(move => {
+              const outName = rosterById.get(move.outPlayerId)?.name || 'Player';
+              const inName = rosterById.get(move.inPlayerId)?.name || 'Player';
+              return `Out: ${outName} -> In: ${inName} (+${(move.expectedGain || 0).toFixed(1)} pts)`;
+            });
+            planMessage = [
+              focusDef ? 'Top defense upgrades without hits:' : `Top upgrades without hits (budget ${budget.toFixed(1)}m, ${freeTransfers} FT):`,
               ...lines,
-              `Projected net gain: ${((top as any).totalExpectedGain || 0).toFixed(1)} pts`
+              `Projected net gain: ${((topPlan as any).totalExpectedGain || 0).toFixed(1)} pts`
             ].join('\n');
-            return {
-              message: msg,
-              insights: [],
-              suggestions: [
-                `Target GW with ${cleanMoves.length} upgrade(s)`,
-                'Avoid hits unless expected gain > 6 pts'
-              ],
-              followUpQuestions: [
-                'Want a riskier plan with hits?',
-                focusDef ? 'Should I consider premium defender upgrades?' : 'Prefer focusing on bench or premium upgrades?'
-              ]
-            };
           }
         }
-      } catch {}
-      // Get current analysis and competitive intelligence
-      const [analysis, competitiveReport] = await Promise.all([
-        this.analysisEngine.analyzeTeam(context.teamId),
-        this.competitiveEngine.generateIntelligenceReport([], 5).catch(() => null)
-      ]);
+      }
 
+      const competitiveReport = await this.competitiveEngine.generateIntelligenceReport(analysis.players || [], 5).catch(() => null);
       const transferTargets = competitiveReport?.transferTargets || [];
       const insights = this.generateTransferInsights(analysis, transferTargets);
-      
-      const message = this.formatTransferSuggestionsMessage(analysis, transferTargets);
-      
+      const baseMessage = this.formatTransferSuggestionsMessage(analysis, transferTargets);
+
+      const strategyPlan = await this.strategyAgent.recommendTransfers({
+        analysis,
+        focus: focusDef ? 'defence' : 'balanced',
+        intentType: intent.type,
+      });
+
+      const composedMessageParts: string[] = [baseMessage];
+      if (planMessage) composedMessageParts.push('', planMessage);
+      if (strategyPlan) composedMessageParts.push('', ...strategyPlan.narrative);
+      const message = composedMessageParts.join('\n').trim();
+
+      const suggestions = [
+        ...transferTargets.slice(0, 5).map(target => `${target.playerName}: ${target.reason} (${target.priority} priority)`),
+      ];
+      if (planMessage) {
+        suggestions.push('Prioritise upgrades that deliver positive expected gain');
+      }
+      if (strategyPlan) {
+        suggestions.push('Leverage differentials highlighted by the policy agent');
+      }
+
+      const followUps: string[] = [
+        'Want me to analyze specific transfer options?',
+        'Should I check if any transfers would improve your fixtures?',
+        'Need help timing transfers around price changes?'
+      ];
+      if (strategyPlan) {
+        followUps.push(...strategyPlan.followUps);
+      }
+
       return {
         message,
         insights,
-        suggestions: transferTargets.slice(0, 5).map(target => 
-          `${target.playerName}: ${target.reason} (${target.priority} priority)`
-        ),
-        followUpQuestions: [
-          "Want me to analyze specific transfer options?",
-          "Should I check if any transfers would improve your fixtures?",
-          "Need help timing transfers around price changes?"
-        ]
+        suggestions: Array.from(new Set(suggestions)).slice(0, 6),
+        followUpQuestions: Array.from(new Set(followUps)).slice(0, 6),
+        explanations: strategyPlan ? [strategyPlan.explanation] : undefined,
+        analysisPerformed: {
+          type: 'transfer_suggestions',
+          confidence: strategyPlan?.explanation.confidence ?? 70,
+          dataUsed: [
+            'transfer_engine',
+            'strategy_agent',
+            'competitive_intelligence'
+          ]
+        }
       };
-      
+
     } catch (error) {
       console.error('Transfer suggestions error:', error);
       return {
@@ -825,7 +914,25 @@ export class AICopilotService {
           "Consider upcoming fixture difficulty",
           "Monitor injury news and rotation risks"
         ],
-        followUpQuestions: ["Which position needs strengthening?"]
+        followUpQuestions: ["Which position needs strengthening?"],
+        explanations: [
+          {
+            title: 'Why no personalised plan?',
+            summary: 'The policy agent could not access up-to-date squad data, so only generic guidance is provided.',
+            confidence: 40,
+            factors: [
+              {
+                feature: 'data_availability',
+                value: 0,
+                baseline: 1,
+                contribution: -1,
+                weight: 1,
+                impact: 'negative',
+                description: 'Squad analysis unavailable or failed.'
+              }
+            ]
+          }
+        ]
       };
     }
   }
@@ -938,27 +1045,27 @@ export class AICopilotService {
     const totalValue = analysis.budget?.teamValue || 100;
     const bankAmount = analysis.budget?.bank || 0;
     const freeTransfers = analysis.budget?.freeTransfers || 1;
-    
+
     let message = `Your squad analysis is complete! I've analyzed your ${playerCount} players using advanced simulation and ML models.\n\n`;
-    
-    message += `📊 **Squad Overview:**\n`;
-    message += `• Team Value: £${totalValue.toFixed(1)}m\n`;
-    message += `• Bank: £${bankAmount.toFixed(1)}m\n`;
-    message += `• Free Transfers: ${freeTransfers}\n\n`;
-    
+
+    message += `**Squad Overview:**\n`;
+    message += `- Team Value: £${totalValue.toFixed(1)}m\n`;
+    message += `- Bank: £${bankAmount.toFixed(1)}m\n`;
+    message += `- Free Transfers: ${freeTransfers}\n\n`;
+
     if (insights.length > 0) {
-      message += `🔍 **Key Insights:**\n`;
+      message += `**Key Insights:**\n`;
       insights.slice(0, 2).forEach(insight => {
-        message += `• ${insight.title}: ${insight.content}\n`;
+        message += `- ${insight.title}: ${insight.content}\n`;
       });
       message += `\n`;
     }
-    
+
     if (analysis.recommendations && analysis.recommendations.length > 0) {
       const topChip = analysis.recommendations[0];
-      message += `🎯 **Top Recommendation:** ${topChip.chipType} in GW${topChip.gameweek} (${topChip.confidence}% confidence)`;
+      message += `**Top Recommendation:** ${topChip.chipType} in GW${topChip.gameweek} (${topChip.confidence}% confidence)`;
     }
-    
+
     return message;
   }
 
@@ -1121,26 +1228,30 @@ export class AICopilotService {
   /**
    * Analyze specific player using advanced engines
    */
-  private async analyzePlayerWithAdvancedEngines(player: any, analysis: any): Promise<any> {
+  private async analyzePlayerWithAdvancedEngines(player: ProcessedPlayer, analysis: any): Promise<any> {
     try {
       // Get OpenFPL prediction for the player
       const openFPLEngine = (await import('./openFPLEngine')).OpenFPLEngine.getInstance();
       const openFPLPrediction = await openFPLEngine.predictPlayer(player, analysis.gameweeks || [], player.advancedStats);
+      console.info(`[TRACE][AI-Copilot] OpenFPL prediction used for player ${player.name || player.id}`);
 
       // Get Monte Carlo simulation results
       const monteCarloEngine = (await import('./monteCarloEngine')).MonteCarloEngine.getInstance();
       const monteCarloResult = await monteCarloEngine.simulatePlayer(player, analysis.gameweeks || [], player.advancedStats);
+      console.info(`[TRACE][AI-Copilot] MonteCarloEngine.simulatePlayer used for player ${player.name || player.id}`);
 
       // Get Effective Ownership analysis
-      const effectiveOwnershipEngine = (await import('./effectiveOwnershipEngine')).EffectiveOwnershipEngine.getInstance();
-      const ownershipData = await effectiveOwnershipEngine.calculateEffectiveOwnership([player]);
+      const { EffectiveOwnershipEngine } = await import('./effectiveOwnershipEngine');
+      const effectiveOwnershipEngine = EffectiveOwnershipEngine.getInstance();
+      const ownershipData = effectiveOwnershipEngine.getOwnershipSnapshot(player);
+      console.info(`[TRACE][AI-Copilot] EffectiveOwnershipEngine.getOwnershipSnapshot used for player ${player.name || player.id}`);
 
       return {
         openFPL: openFPLPrediction,
         monteCarlo: monteCarloResult,
-        effectiveOwnership: ownershipData[0],
+        effectiveOwnership: ownershipData,
         fixtureAnalysis: this.analyzePlayerFixtures(player, analysis.gameweeks || []),
-        recommendation: this.generatePlayerRecommendation(player, openFPLPrediction, monteCarloResult, ownershipData[0])
+        recommendation: this.generatePlayerRecommendation(player, openFPLPrediction, monteCarloResult, ownershipData)
       };
     } catch (error) {
       console.warn('Advanced engine analysis failed, using fallback:', error);
@@ -1153,184 +1264,260 @@ export class AICopilotService {
   }
 
   /**
-   * Generate player-specific insights
+   * Generate LLM-enhanced response with live FPL data (RAG Architecture)
    */
-  private async generatePlayerSpecificInsights(player: any, playerAnalysis: any): Promise<AIInsight[]> {
-    const insights: AIInsight[] = [];
+  private async generateLLMEnhancedResponse(intent: QueryIntent, context: ConversationContext): Promise<Omit<AICopilotResponse, 'conversationContext'>> {
+    const startTime = Date.now();
 
-    // OpenFPL prediction insight
-    if (playerAnalysis.openFPL) {
-      const prediction = playerAnalysis.openFPL;
-      insights.push({
-        type: prediction.expectedPoints > 4 ? 'opportunity' : 'warning',
-        title: 'Expected Points Analysis',
-        content: `${player.name} has an expected points range of ${prediction.floor}-${prediction.ceiling} with ${prediction.haulingProbability.toFixed(1)}% haul probability`,
-        priority: prediction.confidence > 70 ? 'high' : 'medium',
-        confidence: prediction.confidence,
-        reasoning: [`OpenFPL model confidence: ${prediction.confidence}%`, 'Based on form, fixtures, and statistical analysis'],
-        lastUpdated: new Date().toISOString(),
-        relatedData: {
-          players: [player.id],
-          expectedPoints: prediction.expectedPoints,
-          riskLevel: prediction.haulingProbability > 0.15 ? 'low' : 'medium'
+    // Fetch LIVE FPL data for accurate responses (RAG approach)
+    let analysisData: any = null;
+    let squadData: any = null;
+    let recommendations: any[] = [];
+    let liveFPLData: any = null;
+
+    try {
+      // Always get fresh analysis data to prevent hallucinations
+      if (context.teamId) {
+        const now = Date.now();
+        const cache = context.currentAnalysis;
+        if (cache && cache.teamId === context.teamId && cache.teamData) {
+          const last = cache.lastAnalyzed ? Date.parse(cache.lastAnalyzed) : 0;
+          if (last && now - last < this.ANALYSIS_CACHE_TTL_MS) {
+            analysisData = cache.teamData;
+          }
         }
-      });
-    }
 
-    // Monte Carlo insight
-    if (playerAnalysis.monteCarlo) {
-      const mc = playerAnalysis.monteCarlo;
-      insights.push({
-        type: mc.haulingProbability > 0.2 ? 'opportunity' : 'explanation',
-        title: 'Points Distribution Analysis',
-        content: `Simulation shows ${(mc.haulingProbability * 100).toFixed(1)}% chance of 10+ point hauls, with ${mc.consistency.toFixed(1)} consistency rating`,
-        priority: 'medium',
-        confidence: 80,
-        reasoning: [`Based on ${mc.simulations.length} Monte Carlo simulations`, 'Accounts for multiple outcome scenarios'],
-        lastUpdated: new Date().toISOString(),
-        relatedData: {
-          players: [player.id],
-          expectedPoints: mc.expectedPoints
+        if (!analysisData) {
+          analysisData = await this.analysisEngine.analyzeTeam(context.teamId);
+          context.currentAnalysis = {
+            ...(cache || {}),
+            teamId: context.teamId,
+            teamData: analysisData,
+            lastAnalyzed: new Date(now).toISOString()
+          };
         }
-      });
-    }
 
-    // Ownership insight  
-    if (playerAnalysis.effectiveOwnership) {
-      const eo = playerAnalysis.effectiveOwnership;
-      insights.push({
-        type: eo.isDifferential ? 'opportunity' : 'explanation',
-        title: 'Ownership & Differential Analysis',
-        content: `${eo.ownership.toFixed(1)}% owned (${eo.isDifferential ? 'differential pick' : 'template pick'}). Rank impact: ${eo.rankChangeImpact > 0 ? '+' : ''}${eo.rankChangeImpact}`,
-        priority: eo.isDifferential ? 'medium' : 'low',
-        confidence: 75,
-        reasoning: ['Based on effective ownership calculations', 'Considers captaincy and rank impact'],
-        lastUpdated: new Date().toISOString(),
-        relatedData: {
-          players: [player.id],
-          riskLevel: eo.isDifferential ? 'medium' : 'low'
+        if (context.currentAnalysis) {
+          this.updateSession(context.sessionId, context);
         }
-      });
+
+        squadData = {
+          teamValue: analysisData.budget?.teamValue || 100,
+          bank: analysisData.budget?.bank || 0,
+          freeTransfers: analysisData.budget?.freeTransfers || 1,
+          teamName: analysisData.teamName || 'Your team'
+        };
+        recommendations = analysisData.recommendations || [];
+
+        // Extract live player data for context
+        liveFPLData = {
+          players: analysisData.players?.slice(0, 15).map((p: any) => ({
+            name: p.name,
+            position: p.position,
+            team: p.team,
+            price: p.price,
+            points: p.points,
+            expectedPoints: p.expectedPoints,
+            form: p.volatility || 0,
+            isStarter: p.isStarter,
+            isBench: p.isBench
+          })) || [],
+          nextFixtures: analysisData.gameweeks?.slice(0, 3).map((gw: any) => ({
+            gameweek: gw.gameweek,
+            difficulty: gw.difficulty,
+            averageFDR: gw.averageFDR,
+            keyFixtures: gw.fixtures?.slice(0, 5).map((f: any) =>
+              `${f.playerName} vs ${f.opponent} (${f.isHome ? 'H' : 'A'}, FDR: ${f.fdr})`
+            ) || []
+          })) || [],
+          chipRecommendations: recommendations.slice(0, 3).map((r: any) => ({
+            chip: r.chipType,
+            gameweek: r.gameweek,
+            priority: r.priority,
+            reasoning: r.reasoning?.slice(0, 2) || [],
+            confidence: r.confidence || 0
+          }))
+        };
+      } else {
+        // No Team ID available - return data request message instead of proceeding
+        return {
+          message: "I'd love to help with your FPL strategy! To give you accurate, personalized advice about players like Watkins, I need to analyze your actual squad first. Could you please provide your Team ID so I can see your current players, their prices, and upcoming fixtures?",
+          insights: [],
+          suggestions: [
+            "Share your FPL Team ID for personalized analysis",
+            "You can find your Team ID in the FPL app/website URL",
+            "Once I have your squad data, I can give specific advice about your players"
+          ],
+          followUpQuestions: [
+            "What's your FPL Team ID?",
+            "Would you like help finding your Team ID?",
+            "Are you looking for general FPL advice instead?"
+          ]
+        };
+      }
+    } catch (error) {
+      console.warn('Failed to get live FPL data for AI context:', error);
+      // Return data unavailable message instead of proceeding without data
+      return {
+        message: "I'm having trouble accessing your FPL data right now. To give you accurate advice about specific players, I need access to current squad and fixture information. Please try again in a moment, or provide your Team ID if you haven't already.",
+        insights: [],
+        suggestions: [
+          "Try your question again in a moment",
+          "Double-check your Team ID if provided",
+          "Ask a general FPL strategy question instead"
+        ],
+        followUpQuestions: [
+          "Would you like to try again?",
+          "Do you have a different Team ID to try?",
+          "Can I help with general FPL strategy instead?"
+        ]
+      };
     }
 
-    return insights.slice(0, 3); // Limit to top 3 insights
-  }
+    // Build conversation history for context
+    const conversationHistory = context.messages
+      .slice(-6) // Last 6 messages for context
+      .map(msg => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content
+      }));
 
-  /**
-   * Format comprehensive player advice message
-   */
-  private formatPlayerAdviceMessage(player: any, playerAnalysis: any, originalQuery: string): string {
-    const recommendation = playerAnalysis.recommendation;
-    const openFPL = playerAnalysis.openFPL;
-    const monteCarlo = playerAnalysis.monteCarlo;
+    // Get the user's current query
+    const currentQuery = context.messages[context.messages.length - 1]?.content || intent.originalQuery;
 
-    let message = `Here's my analysis of **${player.name}**:\n\n`;
-
-    // Lead with the recommendation
-    const actionMap = {
-      'hold': '✅ **KEEP** - Strong hold',
-      'sell': '❌ **SELL** - Consider transfer',
-      'monitor': '⏳ **MONITOR** - Watch closely',
-      'captain': '🔥 **CAPTAIN OPTION** - Strong choice',
-      'bench': '📝 **BENCH** - Better options available'
-    };
-
-    message += `${actionMap[recommendation] || '📊 **ASSESS** - Mixed signals'}\n\n`;
-
-    // Key stats
-    if (openFPL && monteCarlo) {
-      message += `**Key Stats:**\n`;
-      message += `• Expected Points: ${openFPL.expectedPoints.toFixed(1)} (Range: ${openFPL.floor}-${openFPL.ceiling})\n`;
-      message += `• Haul Probability: ${(openFPL.haulingProbability * 100).toFixed(1)}%\n`;
-      message += `• Consistency: ${monteCarlo.consistency?.toFixed(1) || 'N/A'}/10\n\n`;
-    }
-
-    // Specific advice based on query
-    if (originalQuery.toLowerCase().includes('blank')) {
-      message += `**About the blanks:** Players go through rough patches, but ${player.name}'s underlying numbers ${openFPL && openFPL.expectedPoints > 3 ? 'suggest better returns ahead' : 'show some concerns'}.\n\n`;
-    }
-
-    // Reasoning
-    if (playerAnalysis.reasoning && playerAnalysis.reasoning.length > 0) {
-      message += `**Why this recommendation:**\n`;
-      playerAnalysis.reasoning.slice(0, 3).forEach((reason: string) => {
-        message += `• ${reason}\n`;
-      });
-    }
-
-    return message;
-  }
-
-  /**
-   * Generate player-specific suggestions
-   */
-  private generatePlayerSpecificSuggestions(player: any, playerAnalysis: any): string[] {
-    const suggestions: string[] = [];
-    const recommendation = playerAnalysis.recommendation;
-    
-    switch (recommendation) {
-      case 'sell':
-        suggestions.push(`Consider transferring ${player.name} for better fixtures/form`);
-        suggestions.push('Look at similarly priced alternatives in better form');
-        suggestions.push('Time the transfer around price changes if possible');
-        break;
-      case 'hold':
-        suggestions.push(`${player.name} is worth keeping - fixtures/form look good`);
-        suggestions.push('Consider as captain option if fixtures improve');
-        suggestions.push('Monitor for any injury/rotation concerns');
-        break;
-      case 'captain':
-        suggestions.push(`Strong captain option - ${player.name} has explosive potential`);
-        suggestions.push('Check team news before deadline');
-        suggestions.push('Have a reliable vice-captain backup');
-        break;
-      default:
-        suggestions.push(`Monitor ${player.name}'s minutes and form closely`);
-        suggestions.push('Consider fixtures over next 3-4 gameweeks');
-        suggestions.push('Look at underlying stats for trend signals');
-    }
-
-    // Add fixture-based suggestion if available
-    if (playerAnalysis.fixtureAnalysis && playerAnalysis.fixtureAnalysis.upcomingDifficulty) {
-      const difficulty = playerAnalysis.fixtureAnalysis.upcomingDifficulty;
-      if (difficulty < 3) {
-        suggestions.push('Favorable upcoming fixtures support keeping');
-      } else if (difficulty > 3.5) {
-        suggestions.push('Difficult fixtures ahead - consider alternatives');
+    // Check if we have valid analysis data before proceeding with LLM calls
+    if (!analysisData || !liveFPLData || !squadData) {
+      console.warn('Missing analysis data, falling back to rule-based summary');
+      const ruleBased = this.generateRuleBasedSummary({ analysisData, squadData });
+      if (ruleBased) {
+        return {
+          message: ruleBased,
+          insights: [],
+          suggestions: this.generateDynamicSuggestions(intent, analysisData),
+          followUpQuestions: this.generateDynamicFollowUps(intent, context),
+          analysisPerformed: {
+            type: intent.type as any,
+            confidence: 70,
+            dataUsed: ['fpl_data']
+          }
+        };
       }
     }
 
-    return suggestions.slice(0, 4);
-  }
+    // Structured path first (preferred) - only if we have valid data
+    let structured: any = null;
+    let finalMessage: string = '';
 
-  /**
-   * Analyze player's upcoming fixtures
-   */
-  private analyzePlayerFixtures(player: any, gameweeks: any[]): any {
-    if (!gameweeks || gameweeks.length === 0) {
-      return { upcomingDifficulty: 3, trend: 'stable' };
+    try {
+      structured = await this.llmService.generateFPLStructuredResponse(
+        currentQuery,
+        { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
+        conversationHistory
+      );
+    } catch (error) {
+      console.warn('Structured response generation failed:', error);
     }
 
-    const playerFixtures = gameweeks
-      .slice(0, 4) // Next 4 gameweeks
-      .flatMap(gw => gw.fixtures || [])
-      .filter((f: any) => f.playerId === player.id);
+    // Build allowed validation sets
+    const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => (p.name as string)).filter(Boolean);
+    const allowedNameSet = new Set(allowedNames.map(n => n.toLowerCase()));
+    const allowedFixturesSet = new Set<string>();
+    try {
+      for (const gw of (analysisData?.gameweeks || [])) {
+        for (const f of (gw.fixtures || [])) {
+          const key = `${gw.gameweek}|${(f.playerName||'').toLowerCase()}|${(f.opponent||'').toLowerCase()}|${f.isHome?'H':'A'}|${Math.round(f.fdr||0)}`;
+          allowedFixturesSet.add(key);
+        }
+      }
+    } catch {}
 
-    if (playerFixtures.length === 0) {
-      return { upcomingDifficulty: 3, trend: 'stable' };
+    if (structured && allowedNames.length > 0) {
+      // Validate structured content
+      structured.playersUsed = (structured.playersUsed || []).filter((n: any) => typeof n === 'string' && allowedNameSet.has(n.toLowerCase()));
+      structured.fixturesUsed = (structured.fixturesUsed || []).filter((fx: any) => {
+        if (!fx || typeof fx.player !== 'string' || typeof fx.opponent !== 'string') return false;
+        const key = `${Math.round(fx.gameweek||0)}|${fx.player.toLowerCase()}|${fx.opponent.toLowerCase()}|${fx.isHome?'H':'A'}|${Math.round(fx.fdr||0)}`;
+        return allowedFixturesSet.has(key);
+      });
+
+      finalMessage = this.llmService.formatStructuredToText(
+        structured,
+        { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData }
+      );
+
+      // Only use structured response if it contains meaningful content
+      if (finalMessage && finalMessage.length > 50 && !finalMessage.includes('could not generate')) {
+        console.log(`Using structured response for ${intent.type} (${Date.now() - startTime}ms)`);
+      } else {
+        structured = null; // Force fallback
+      }
     }
 
-    const avgDifficulty = playerFixtures.reduce((sum: number, f: any) => sum + (f.fdr || 3), 0) / playerFixtures.length;
-    
+    // Fallback to free-form LLM only if structured failed or returned poor content
+    if (!structured || !finalMessage || finalMessage.length < 50) {
+      try {
+        console.log(`Falling back to free-form LLM for ${intent.type} (${Date.now() - startTime}ms)`);
+        let llmResponse = await this.llmService.generateFPLResponse(
+          currentQuery,
+          { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
+          conversationHistory
+        );
+
+        // Apply player name validation and rewriting
+        if (allowedNames.length > 0) {
+          const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
+          const rewritten = await this.llmService.generateCompletionSafe([
+            { role: 'system', content: rewriteSystem },
+            { role: 'user', content: llmResponse }
+          ], { maxTokens: 400, timeoutMs: 6000 }); // Further reduced for performance
+          if (rewritten && rewritten.trim().length > 0) {
+            llmResponse = rewritten;
+          }
+        }
+
+        // If LLM returned generic fallback or too short, build rule-based answer instead
+        const isGenericFallback = typeof llmResponse === 'string' && llmResponse.includes("I couldn't form a complete answer right now");
+        if (isGenericFallback || (llmResponse || '').trim().length < 60) {
+          const rule = this.generateRuleBasedSummary({ analysisData, squadData })
+            || this.generateRuleBasedSummary({ analysisData })
+            || 'Here is a quick, data-grounded view: focus your captaincy and transfers on nailed starters with favorable FDR and form; avoid low-minutes risks.';
+          finalMessage = rule;
+        } else {
+          finalMessage = llmResponse;
+        }
+      } catch (error) {
+        console.warn('Free-form LLM generation failed, using rule-based fallback:', error);
+        finalMessage = this.generateRuleBasedSummary({ analysisData, squadData }) || 'I apologize, but I\'m having trouble generating a response right now. Please try again.';
+      }
+    }
+
+    // Generate insights based on analysis data
+    const insights: AIInsight[] = [];
+    if (analysisData?.insights) {
+      insights.push(...analysisData.insights);
+    }
+
+    // Generate dynamic suggestions based on intent
+    const suggestions = this.generateDynamicSuggestions(intent, analysisData);
+
+    // Generate dynamic follow-up questions
+    const followUpQuestions = this.generateDynamicFollowUps(intent, context);
+
     return {
-      upcomingDifficulty: avgDifficulty,
-      trend: avgDifficulty < 3 ? 'improving' : avgDifficulty > 3.5 ? 'worsening' : 'stable',
-      fixtures: playerFixtures.slice(0, 3)
+      message: finalMessage,
+      insights,
+      suggestions,
+      followUpQuestions,
+      analysisPerformed: analysisData ? {
+        type: intent.type as any,
+        confidence: structured ? Math.min(95, intent.confidence + 15) : Math.min(85, intent.confidence + 10),
+        dataUsed: ['fpl_data', 'llm_analysis', 'simulation', 'ml_predictions', 'competitive_intelligence']
+      } : undefined
     };
   }
 
   /**
-   * Generate player recommendation based on engine outputs
+   * Generate player recommendation based on analysis
    */
   private generatePlayerRecommendation(player: any, openFPL: any, monteCarlo: any, ownership: any): string {
     let score = 0;
@@ -1338,17 +1525,12 @@ export class AICopilotService {
 
     // OpenFPL factors
     if (openFPL) {
-      if (openFPL.expectedPoints > 5) {
+      if (openFPL.expectedPoints > 6) {
         score += 2;
-        reasoning.push('High expected points from OpenFPL model');
-      } else if (openFPL.expectedPoints < 3) {
-        score -= 2;
-        reasoning.push('Low expected points prediction');
-      }
-      
-      if (openFPL.haulingProbability > 0.15) {
+        reasoning.push('Strong expected points');
+      } else if (openFPL.expectedPoints > 4) {
         score += 1;
-        reasoning.push('Good haul potential');
+        reasoning.push('Good expected points');
       }
     }
 
@@ -1432,6 +1614,7 @@ export class AICopilotService {
         strategyType: 'balanced',
         priorityChips: []
       },
+      currentAnalysis: {},
       lastUpdated: new Date().toISOString()
     };
 

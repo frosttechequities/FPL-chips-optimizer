@@ -1,21 +1,40 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { 
-  analyzeTeamRequestSchema, 
+import {
+  analyzeTeamRequestSchema,
   planTransfersRequestSchema,
   chatRequestSchema,
   type AnalyzeTeamResponse,
   type PlanTransfersResponse,
-  type AICopilotResponse 
+  type AICopilotResponse,
+  type StrategyModelsResponse,
+  StrategyModelSummary
 } from "@shared/schema";
 import { AnalysisEngine } from "./services/analysisEngine";
 import { TransferEngine } from "./services/transferEngine";
 import { AICopilotService } from "./services/aiCopilotService";
+import { ProviderStatusService } from "./services/providerStatusService";
+import { StrategyModelRegistry } from "./services/strategyModelRegistry";
 
 const analysisEngine = new AnalysisEngine();
 const transferEngine = new TransferEngine();
 const aiCopilotService = AICopilotService.getInstance();
+const providerStatusService = ProviderStatusService.getInstance();
+const strategyRegistry = StrategyModelRegistry.getInstance();
+
+const STRATEGY_STATUSES: StrategyModelSummary['status'][] = ['active', 'staging', 'archived'];
+
+function parseStrategyStatus(input: unknown): StrategyModelSummary['status'][] | undefined {
+  if (typeof input !== 'string') {
+    return undefined;
+  }
+  const candidates = input.split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+  const statuses = candidates.filter((value): value is StrategyModelSummary['status'] => (STRATEGY_STATUSES as string[]).includes(value));
+  return statuses.length ? Array.from(new Set(statuses)) : undefined;
+}
+
+
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Health check route
@@ -25,20 +44,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Analyze team route
   app.post("/api/analyze", async (req, res) => {
+    let teamId: string | undefined;
     try {
       // Validate request
       const validatedData = analyzeTeamRequestSchema.parse(req.body);
-      const teamId = validatedData.teamId.toString();
+      const parsedTeamId = validatedData.teamId.toString();
+      teamId = parsedTeamId;
 
       // Check cache first (15 minutes cache)
-      const cacheTimestamp = await storage.getCacheTimestamp(teamId);
+      const cacheTimestamp = await storage.getCacheTimestamp(parsedTeamId);
       const now = Date.now();
       const cacheExpiry = 15 * 60 * 1000; // 15 minutes
 
       if (cacheTimestamp && (now - cacheTimestamp) < cacheExpiry) {
-        const cachedResult = await storage.getAnalysisResult(teamId);
+        const cachedResult = await storage.getAnalysisResult(parsedTeamId);
         if (cachedResult) {
-          console.log(`Returning cached analysis for team ${teamId}`);
+          console.log(`Returning cached analysis for team ${parsedTeamId}`);
           const response: AnalyzeTeamResponse = {
             success: true,
             data: cachedResult
@@ -48,14 +69,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Perform fresh analysis
-      console.log(`Analyzing team ${teamId}...`);
-      const analysisResult = await analysisEngine.analyzeTeam(teamId);
+      console.log(`Analyzing team ${parsedTeamId}...`);
+      const analysisResult = await analysisEngine.analyzeTeam(parsedTeamId);
       
       // Cache the result
-      await storage.setAnalysisResult(teamId, analysisResult);
-      await storage.setCacheTimestamp(teamId, now);
+      await storage.setAnalysisResult(parsedTeamId, analysisResult);
+      await storage.setCacheTimestamp(parsedTeamId, now);
       
-      console.log(`Analysis complete for team ${teamId}`);
+      console.log(`Analysis complete for team ${parsedTeamId}`);
       
       const response: AnalyzeTeamResponse = {
         success: true,
@@ -81,11 +102,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
+      const cachedAnalysis = teamId ? await storage.getAnalysisResult(teamId) : null;
+      if (cachedAnalysis && teamId) {
+        console.warn(`[analysis] Serving cached analysis for ${teamId} due to upstream error.`);
+        const response: AnalyzeTeamResponse = {
+          success: true,
+          data: cachedAnalysis
+        };
+        return res.json(response);
+      }
+
       const errorResponse: AnalyzeTeamResponse = {
         success: false,
         error: errorMessage
       };
-      
+
       res.status(400).json(errorResponse);
     }
   });
@@ -175,30 +206,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Enhanced Phase 1: Data provider status endpoint
-  app.get("/api/providers/status", async (req, res) => {
+  // Phase 3: Strategy model catalogue
+  app.get("/api/strategy/models", async (req, res) => {
     try {
-      const oddsService = await import('./services/oddsService');
-      const statsService = await import('./services/statsService');
-      
-      const odds = oddsService.OddsService.getInstance();
-      const stats = statsService.StatsService.getInstance();
-      
-      const status = {
-        odds: odds.getProviderInfo(),
-        stats: stats.getProviderInfo(),
-        simulation: {
-          name: 'monte-carlo',
-          available: true,
-          defaultRuns: 1000
-        },
-        lastUpdated: new Date().toISOString()
-      };
-      
-      res.json({ success: true, data: status });
+      const statuses = parseStrategyStatus(req.query.status);
+      const models = await strategyRegistry.listModels(statuses);
+      const response: StrategyModelsResponse = { success: true, data: models };
+      res.json(response);
     } catch (error) {
-      console.error('Provider status error:', error);
-      res.status(500).json({ success: false, error: 'Failed to get provider status' });
+      console.error('Strategy model listing error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to load strategy models';
+      const response: StrategyModelsResponse = { success: false, error: message };
+      res.status(500).json(response);
+    }
+  });
+
+  // Enhanced Phase 1: Data provider status endpoint
+  app.get("/api/providers/status", async (_req, res) => {
+    try {
+      const overview = await providerStatusService.getOverview();
+      res.json({ success: true, data: overview });
+    } catch (error) {
+      console.error("Provider status error:", error);
+      const message = error instanceof Error ? error.message : "Failed to get provider status";
+      res.status(500).json({ success: false, error: message });
+    }
+  });
+  // Enhanced Phase 2: Effective ownership snapshot
+  app.get("/api/effective-ownership", async (req, res) => {
+    try {
+      const teamId = req.query.teamId;
+      if (!teamId) {
+        return res.status(400).json({ success: false, error: 'teamId query parameter is required' });
+      }
+
+      const analysis = await analysisEngine.analyzeTeam(String(teamId));
+      const players = analysis.players ?? [];
+      const snapshots = players.map(player => ({
+        playerId: player.id,
+        name: player.name,
+        position: player.position,
+        ownership: effectiveOwnershipEngine.getOwnershipSnapshot(player),
+      }));
+
+      res.json({ success: true, data: snapshots, generatedAt: new Date().toISOString() });
+    } catch (error) {
+      console.error('Effective ownership endpoint error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to compute effective ownership';
+      res.status(500).json({ success: false, error: message });
     }
   });
 
@@ -217,6 +272,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
     
     res.json({ success: true, data: config });
+  });
+
+  // Enhanced Phase 2: Player simulation summary
+  app.get("/api/simulations/player/:playerId", async (req, res) => {
+    try {
+      const playerId = Number(req.params.playerId);
+      if (!Number.isFinite(playerId)) {
+        return res.status(400).json({ success: false, error: 'playerId must be a number' });
+      }
+
+      const simulation = await repository.getPlayerSimulation(playerId);
+      if (!simulation) {
+        return res.status(404).json({ success: false, error: 'Simulation not found' });
+      }
+
+      res.json({ success: true, data: simulation });
+    } catch (error) {
+      console.error('Simulation summary error:', error);
+      const message = error instanceof Error ? error.message : 'Failed to load simulation summary';
+      res.status(500).json({ success: false, error: message });
+    }
   });
 
   // Enhanced Phase 3: AI Co-pilot chat endpoint
@@ -274,3 +350,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
   return httpServer;
 }
+
+
+

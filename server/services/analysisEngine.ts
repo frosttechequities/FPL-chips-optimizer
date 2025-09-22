@@ -15,13 +15,17 @@ import {
   type PlayerAdvanced,
   type MatchOdds,
   type MLPrediction,
-  type CompetitiveIntelligence
+  type CompetitiveIntelligence,
+  type PlayerArchetype
 } from "@shared/schema";
 import { FPLApiService } from './fplApi';
 import { TransferEngine } from './transferEngine';
 import { OddsService } from './oddsService';
+import { DataRepository } from './repositories/dataRepository';
+import { DataPipeline } from './dataPipeline';
 import { StatsService } from './statsService';
 import { SimulationEngine, type GameweekFixture, type SimulationConfig } from './simulationEngine';
+import { EffectiveOwnershipEngine } from './effectiveOwnershipEngine';
 import { MLPredictionEngine } from './mlPredictionEngine';
 import { CompetitiveIntelligenceEngine } from './competitiveIntelligenceEngine';
 
@@ -32,12 +36,20 @@ const POSITION_MAP: Record<number, 'GK' | 'DEF' | 'MID' | 'FWD'> = {
   4: 'FWD'
 };
 
+const OWNERSHIP_TIERS = {
+  template: 20,
+  balanced: 8,
+};
+
 export class AnalysisEngine {
   private fplApi: FPLApiService;
   private transferEngine: TransferEngine;
   private oddsService: OddsService;
   private statsService: StatsService;
+  private repository: DataRepository | null;
+  private dataPipeline: DataPipeline | null;
   private simulationEngine: SimulationEngine;
+  private effectiveOwnershipEngine: EffectiveOwnershipEngine;
   private mlPredictionEngine: MLPredictionEngine;
   private competitiveIntelligenceEngine: CompetitiveIntelligenceEngine;
 
@@ -47,92 +59,293 @@ export class AnalysisEngine {
     this.oddsService = OddsService.getInstance();
     this.statsService = StatsService.getInstance();
     this.simulationEngine = SimulationEngine.getInstance();
+    this.effectiveOwnershipEngine = EffectiveOwnershipEngine.getInstance();
     this.mlPredictionEngine = MLPredictionEngine.getInstance();
     this.competitiveIntelligenceEngine = CompetitiveIntelligenceEngine.getInstance();
+    this.repository = this.safeCreateRepository();
+    this.dataPipeline = this.safeCreatePipeline();
   }
 
   async analyzeTeam(teamId: string): Promise<AnalysisResult> {
     try {
-      const managerId = parseInt(teamId);
-      
-      // Fetch all required data in parallel
-      const [bootstrap, userSquad, userInfo, fixtures, freeTransfers, nextDeadline] = await Promise.all([
-        this.fplApi.getBootstrapData(),
+      const managerId = parseInt(teamId, 10);
+
+      if (this.dataPipeline) {
+        await this.dataPipeline.ensureFreshData().catch(error => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('[analysis] Failed to ensure data freshness:', message);
+        });
+      }
+
+      let players: FPLPlayer[] = [];
+      let teams: FPLTeam[] = [];
+      let fixtures: FPLFixture[] = [];
+      let freshness: {
+        players: Date | null;
+        teams: Date | null;
+        fixtures: Date | null;
+        advancedStats: Date | null;
+      } = {
+        players: null,
+        teams: null,
+        fixtures: null,
+        advancedStats: null,
+      };
+
+      const sanitizePlayers = (list: FPLPlayer[]) =>
+        list.filter((player): player is FPLPlayer => Boolean(player && typeof player.id === "number"));
+      const sanitizeTeams = (list: FPLTeam[]) =>
+        list.filter((team): team is FPLTeam => Boolean(team && typeof team.id === "number"));
+      const sanitizeFixtures = (list: FPLFixture[]) =>
+        list.filter((fixture): fixture is FPLFixture => Boolean(fixture && typeof fixture.id === "number"));
+
+      if (this.repository) {
+        const [storedPlayers, storedTeams, storedFixtures, timestamps] = await Promise.all([
+          this.repository.getFplPlayers(),
+          this.repository.getFplTeams(),
+          this.repository.getFplFixtures(),
+          this.repository.getLatestFetchTimestamps(),
+        ]);
+        players = sanitizePlayers(storedPlayers);
+        teams = sanitizeTeams(storedTeams);
+        fixtures = sanitizeFixtures(storedFixtures);
+        freshness = {
+          players: timestamps.players ?? null,
+          teams: timestamps.teams ?? null,
+          fixtures: timestamps.fixtures ?? null,
+          advancedStats: timestamps.advancedStats ?? null,
+        };
+      }
+
+      if (!players.length || !teams.length) {
+        const bootstrap = await this.fplApi.getBootstrapData();
+        players = sanitizePlayers(bootstrap.elements);
+        teams = sanitizeTeams(bootstrap.teams);
+
+        if (this.repository) {
+          await Promise.all([
+            this.repository.upsertFplPlayers(players),
+            this.repository.upsertFplTeams(teams),
+          ]).catch(error => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn('[analysis] Failed to persist bootstrap snapshot:', message);
+          });
+        }
+      }
+
+      const currentGameweek = await this.fplApi.getCurrentGameweek();
+      const fixturesHorizon = 15;
+
+      const horizonStart = currentGameweek;
+      const horizonEnd = currentGameweek + fixturesHorizon;
+
+      fixtures = sanitizeFixtures(fixtures)
+        .filter((fixture): fixture is FPLFixture => Boolean(fixture))
+        .filter(fixture => {
+          const finished = typeof fixture.finished === 'boolean' ? fixture.finished : false;
+          const eventNumber = typeof fixture.event === 'number' ? fixture.event : Number(fixture.event ?? NaN);
+
+          if (Number.isNaN(eventNumber)) {
+            return false;
+          }
+
+          return !finished && eventNumber >= horizonStart && eventNumber <= horizonEnd;
+        });
+
+      if (!fixtures.length) {
+        fixtures = sanitizeFixtures(await this.fplApi.getUpcomingFixtures(fixturesHorizon));
+        if (this.repository) {
+          await this.repository.upsertFplFixtures(fixtures).catch(error => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn('[analysis] Failed to persist fixtures:', message);
+          });
+        }
+      }
+
+      const [userSquad, userInfo, freeTransfers, nextDeadline] = await Promise.all([
         this.fplApi.getUserSquad(managerId),
         this.fplApi.getUserInfo(managerId),
-        this.fplApi.getUpcomingFixtures(15),
         this.fplApi.computeFreeTransfers(managerId),
-        this.fplApi.getNextDeadline()
+        this.fplApi.getNextDeadline(),
       ]);
 
-      // Enhanced Phase 1: Fetch odds and advanced stats
-      const fixtureIds = fixtures.map(f => f.id);
+      const fixtureIds = fixtures.map(fixture => fixture.id);
       const playerIds = userSquad.picks.map(pick => pick.element);
-      
-      const [oddsData, playerStats] = await Promise.all([
-        this.oddsService.getMatchOddsBatch(fixtureIds).catch(e => {
-          console.warn('Odds service unavailable:', e.message);
-          return [];
+
+      const oddsData = await this.oddsService.getMatchOddsBatch(fixtureIds).catch(error => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn('Odds service unavailable:', message);
+        return [] as MatchOdds[];
+      });
+
+      let playerStats: PlayerAdvanced[] = [];
+      if (this.repository) {
+        playerStats = await this.repository.getPlayerAdvancedBatch(playerIds);
+      }
+
+      const statsById = new Map<number, PlayerAdvanced>(
+        playerStats
+          .filter((stat): stat is PlayerAdvanced => Boolean(stat && typeof stat.playerId === "number"))
+          .map(stat => [stat.playerId, stat]),
+      );
+      const missingIds = playerIds.filter(playerId => !statsById.has(playerId));
+
+      if (missingIds.length > 0) {
+        const fetchedStats = await this.statsService.getPlayerAdvancedBatch(missingIds).catch(error => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('Stats service unavailable:', message);
+          return [] as PlayerAdvanced[];
+        });
+
+        if (fetchedStats.length > 0) {
+          const validStats = fetchedStats.filter((stat): stat is PlayerAdvanced => Boolean(stat && typeof stat.playerId === "number"));
+
+          if (validStats.length > 0) {
+            validStats.forEach(stat => statsById.set(stat.playerId, stat));
+
+            if (this.repository) {
+              await Promise.all([
+                this.repository.upsertUnderstatPlayers(validStats, process.env.STATS_PROVIDER || "mock"),
+                this.repository.upsertPlayerFeatureSnapshots(validStats, process.env.STATS_PROVIDER || "mock"),
+              ]).catch(error => {
+                const message = error instanceof Error ? error.message : String(error);
+                console.warn('[analysis] Failed to persist advanced stats:', message);
+              });
+            }
+          }
+        }
+      }
+
+      const orderedPlayerStats = playerIds
+        .map(id => statsById.get(id))
+        .filter((stat): stat is PlayerAdvanced => Boolean(stat));
+
+      const playersWithEnhancements = await this.processPlayersEnhanced(
+        userSquad,
+        players,
+        teams,
+        orderedPlayerStats,
+      );
+
+      const gameweeks = this.calculateEnhancedGameweekFDRs(
+        playersWithEnhancements,
+        fixtures,
+        teams,
+        oddsData,
+      );
+
+      const simulationContext = this.buildSimulationContext(playersWithEnhancements, fixtures, oddsData);
+      const simulationSummary = await this.simulationEngine.simulateSquad(playersWithEnhancements, simulationContext.gameweekFixtures, simulationContext.config);
+
+      const [mlPredictions, competitiveIntelligence] = await Promise.all([
+        this.mlPredictionEngine.predictPlayers(playersWithEnhancements, 5).catch(error => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('ML prediction engine unavailable:', message);
+          return [] as MLPrediction[];
         }),
-        this.statsService.getPlayerAdvancedBatch(playerIds).catch(e => {
-          console.warn('Stats service unavailable:', e.message);
-          return [];
-        })
+        this.competitiveIntelligenceEngine.generateIntelligenceReport(playersWithEnhancements, 5).catch(error => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('Competitive intelligence unavailable:', message);
+          return null;
+        }),
       ]);
 
-      // Process players with enhanced data
-      const players = await this.processPlayersEnhanced(
-        userSquad, bootstrap.elements, bootstrap.teams, playerStats
-      );
-      
-      // Calculate enhanced gameweek FDRs with odds data
-      const gameweeks = this.calculateEnhancedGameweekFDRs(
-        players, fixtures, bootstrap.teams, oddsData
-      );
-      
-      // Run Monte Carlo simulations for squad analysis
-      const simulationSummary = await this.runSquadSimulation(players, fixtures, oddsData);
-      
-      // Enhanced Phase 2: Generate ML predictions and competitive intelligence
-      const [mlPredictions, competitiveIntelligence] = await Promise.all([
-        this.mlPredictionEngine.predictPlayers(players, 5).catch(e => {
-          console.warn('ML prediction engine unavailable:', e.message);
-          return [];
-        }),
-        this.competitiveIntelligenceEngine.generateIntelligenceReport(players, 5).catch(e => {
-          console.warn('Competitive intelligence unavailable:', e.message);
-          return null;
-        })
-      ]);
-      
-      // Merge ML predictions with players data
-      const playersWithML = this.mergeMLPredictions(players, mlPredictions);
-      
-      // Generate enhanced chip recommendations with confidence intervals and ML insights
+      const playersWithML = this.mergeMLPredictions(playersWithEnhancements, mlPredictions);
+
+      const playerSimulationResults = await Promise.all(playersWithML.map(async (player) => {
+        const fixturesForPlayer = simulationContext.gameweekFixtures.filter(f => f.playerId === player.id);
+        const outcome = await this.simulationEngine.simulatePlayer(player, fixturesForPlayer, simulationContext.config);
+        return { player, outcome };
+      }));
+
+      for (const { player, outcome } of playerSimulationResults) {
+        player.simOutcome = outcome;
+
+        if (outcome.meanPoints > 0 && Number.isFinite(outcome.standardDeviation)) {
+          const cv = Number((outcome.standardDeviation / Math.max(outcome.meanPoints, 0.1)).toFixed(3));
+          if (Number.isFinite(cv)) {
+            player.coefficientOfVariation = cv;
+          }
+        }
+
+        const ownership = this.effectiveOwnershipEngine.getOwnershipSnapshot(player);
+        const ownershipTier = ownership.totalOwnership >= OWNERSHIP_TIERS.template
+          ? 'template'
+          : ownership.totalOwnership >= OWNERSHIP_TIERS.balanced
+            ? 'balanced'
+            : 'differential';
+        const riskTier: 'steady' | 'volatile' = player.coefficientOfVariation !== undefined && player.coefficientOfVariation > 0.65 ? 'volatile' : 'steady';
+        const archetype: PlayerArchetype = riskTier === 'volatile'
+          ? 'boom-bust'
+          : ownershipTier === 'template'
+            ? 'template'
+            : ownershipTier === 'differential'
+              ? 'differential'
+              : 'balanced';
+
+        const ownershipGap = Math.max(0, 100 - ownership.effectiveOwnership) / 100;
+        const volatilityBoost = riskTier === 'volatile' ? 1.2 : 1.0;
+        const rankUpsideScore = Math.round(Math.max(0, Math.min(100, outcome.meanPoints * ownershipGap * volatilityBoost * 10)));
+
+        player.effectiveOwnership = {
+          ...ownership,
+          ownershipTier,
+          riskTier,
+        };
+        player.archetype = archetype;
+        player.riskTier = riskTier;
+        player.rankUpsideScore = rankUpsideScore;
+      }
+
       const recommendations = await this.generateEnhancedRecommendations(
-        playersWithML, gameweeks, simulationSummary
+        playersWithML,
+        gameweeks,
+        simulationSummary,
       );
-      
-      // Create budget analysis
+
       const budget = await this.createBudgetAnalysis(
-        userSquad, bootstrap.elements, bootstrap.teams, freeTransfers, nextDeadline
+        userSquad,
+        players,
+        teams,
+        freeTransfers,
+        nextDeadline,
       );
-      
+
       const totalValue = Math.round(userSquad.entry_history.value / 10 * 10) / 10;
       const totalPoints = userSquad.entry_history.total_points;
-      
-      // Determine data source and confidence (Phase 2 Enhanced)
+
       let expectedPointsSource: 'fdr' | 'odds' | 'advanced-stats' | 'simulation' = 'fdr';
       if (mlPredictions.length > 0 && oddsData.length > 0) {
-        expectedPointsSource = 'simulation'; // ML + odds + simulation combined
+        expectedPointsSource = 'simulation';
       } else if (oddsData.length > 0) {
         expectedPointsSource = 'odds';
-      } else if (playerStats.length > 0) {
+      } else if (orderedPlayerStats.length > 0) {
         expectedPointsSource = 'advanced-stats';
       }
-      
-      const confidenceLevel = this.calculateOverallConfidence(simulationSummary, oddsData.length, playerStats.length);
-      
+
+      const confidenceLevel = this.calculateOverallConfidence(
+        simulationSummary,
+        oddsData.length,
+        orderedPlayerStats.length,
+      );
+
+      const toIsoOrUnavailable = (value: Date | string | null | undefined): string => {
+        if (!value) return "unavailable";
+        const asDate = value instanceof Date ? value : new Date(value);
+        return Number.isFinite(asDate.valueOf()) ? asDate.toISOString() : "unavailable";
+      };
+
+      const statsFreshness = toIsoOrUnavailable(orderedPlayerStats[0]?.lastUpdated ?? freshness.advancedStats);
+
+      const dataFreshness = {
+        odds: oddsData.length > 0 ? new Date().toISOString() : "unavailable",
+        stats: statsFreshness,
+        fpl: toIsoOrUnavailable(freshness.players),
+        fixtures: toIsoOrUnavailable(freshness.fixtures),
+        ml: mlPredictions.length > 0 ? new Date().toISOString() : "unavailable",
+        competitiveIntelligence: competitiveIntelligence ? new Date().toISOString() : "unavailable",
+      };
+
       return {
         teamId,
         teamName: userInfo.name || `${userInfo.player_first_name} ${userInfo.player_last_name}`.trim() || 'Unknown Team',
@@ -143,23 +356,13 @@ export class AnalysisEngine {
         recommendations,
         budget,
         lastUpdated: new Date().toISOString(),
-        
-        // Enhanced Phase 1 data
         simulationSummary,
         expectedPointsSource,
         confidenceLevel,
-        dataFreshness: {
-          odds: oddsData.length > 0 ? new Date().toISOString() : 'unavailable',
-          stats: playerStats.length > 0 ? new Date().toISOString() : 'unavailable',
-          fpl: new Date().toISOString(),
-          ml: mlPredictions.length > 0 ? new Date().toISOString() : 'unavailable',
-          competitiveIntelligence: competitiveIntelligence ? new Date().toISOString() : 'unavailable'
-        },
-        
-        // Enhanced Phase 2: Machine Learning and Competitive Intelligence
+        dataFreshness,
         mlPredictions: mlPredictions.length > 0 ? mlPredictions : undefined,
         competitiveIntelligence: competitiveIntelligence?.competitiveIntelligence || undefined,
-        strategicRecommendations: competitiveIntelligence?.recommendedStrategies || undefined
+        strategicRecommendations: competitiveIntelligence?.recommendedStrategies || undefined,
       };
     } catch (error) {
       console.error('Analysis Engine Error:', error);
@@ -167,46 +370,96 @@ export class AnalysisEngine {
     }
   }
 
+  private safeCreateRepository(): DataRepository | null {
+    try {
+      return DataRepository.getInstance();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[analysis] Repository unavailable:', message);
+      return null;
+    }
+  }
+
+  private safeCreatePipeline(): DataPipeline | null {
+    try {
+      return DataPipeline.getInstance();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[analysis] Pipeline unavailable:', message);
+      return null;
+    }
+  }
   private async processPlayersEnhanced(
     userSquad: FPLUserSquad, 
     allPlayers: FPLPlayer[], 
     teams: FPLTeam[],
     playerStats: PlayerAdvanced[]
   ): Promise<ProcessedPlayer[]> {
-    return Promise.all(userSquad.picks.map(async pick => {
-      const player = allPlayers.find(p => p.id === pick.element);
-      const team = teams.find(t => t.id === player?.team);
-      const stats = playerStats.find(s => s.playerId === pick.element);
-      
-      if (!player || !team) {
-        throw new Error(`Player or team data missing for element ${pick.element}`);
+    if (!userSquad?.picks?.length) {
+      return [];
+    }
+
+    const playerIndex = new Map<number, FPLPlayer>(
+      allPlayers
+        .filter((player): player is FPLPlayer => Boolean(player && typeof player.id === "number"))
+        .map(player => [player.id, player]),
+    );
+
+    const teamIndex = new Map<number, FPLTeam>(
+      teams
+        .filter((team): team is FPLTeam => Boolean(team && typeof team.id === "number"))
+        .map(team => [team.id, team]),
+    );
+
+    const statsIndex = new Map<number, PlayerAdvanced>(
+      playerStats
+        .filter((stat): stat is PlayerAdvanced => Boolean(stat && typeof stat.playerId === "number"))
+        .map(stat => [stat.playerId, stat]),
+    );
+
+    const processed: ProcessedPlayer[] = [];
+
+    for (const pick of userSquad.picks) {
+      if (!pick) {
+        continue;
       }
-      
-      // Calculate enhanced expected points
+
+      const player = playerIndex.get(pick.element);
+      if (!player) {
+        console.warn(`[analysis] Player data missing for element ${pick.element}`);
+        continue;
+      }
+
+      const team = teamIndex.get(player.team);
+      if (!team) {
+        console.warn(`[analysis] Team data missing for player ${player.id} (team ${player.team})`);
+        continue;
+      }
+
+      const stats = statsIndex.get(pick.element);
       const expectedPoints = await this.calculateEnhancedExpectedPoints(player, stats);
-      
-      // Calculate historical volatility
-      const volatility = stats?.volatility || this.calculateHistoricalVolatility(player);
-      
-      return {
+      const volatility = stats?.volatility ?? this.calculateHistoricalVolatility(player);
+      const position = POSITION_MAP[player.element_type] ?? 'MID';
+
+      processed.push({
         id: player.id,
         name: player.web_name,
-        position: POSITION_MAP[player.element_type],
-        team: team.short_name,
+        position,
+        team: team.short_name || team.name,
         price: player.now_cost / 10,
         points: player.total_points,
         teamId: player.team,
-        sellPrice: (pick.selling_price || player.now_cost) / 10,
-        purchasePrice: (pick.purchase_price || player.now_cost) / 10,
+        sellPrice: (pick.selling_price ?? player.now_cost) / 10,
+        purchasePrice: (pick.purchase_price ?? player.now_cost) / 10,
         isBench: pick.position > 11,
         isStarter: pick.position <= 11,
         expectedPoints,
-        
-        // Enhanced Phase 1 data
         volatility,
-        advancedStats: stats
-      };
-    }));
+        advancedStats: stats,
+      });
+    }
+
+    return processed;
   }
 
   /**
@@ -232,79 +485,106 @@ export class AnalysisEngine {
   ): Promise<BudgetAnalysis> {
     const bank = userSquad.entry_history.bank / 10; // Convert from tenths to millions
     const teamValue = userSquad.entry_history.value / 10; // Convert from tenths to millions
-    
-    // Find current squad compositions
+
+    const playerPool = allPlayers.filter((player): player is FPLPlayer => Boolean(player && typeof player.id === "number"));
+    const teamIndex = new Map(
+      teams
+        .filter((team): team is FPLTeam => Boolean(team && typeof team.id === "number"))
+        .map(team => [team.id, team]),
+    );
+
     const currentSquad = userSquad.picks.map(pick => {
-      const player = allPlayers.find(p => p.id === pick.element);
+      const player = playerPool.find(p => p.id === pick.element);
+      if (!player) {
+        console.warn(`[analysis] Player data missing for element ${pick.element}`);
+      }
+
       return {
         ...pick,
         player,
-        sellPrice: (pick.selling_price || player?.now_cost || 0) / 10
+        sellPrice: (pick.selling_price || player?.now_cost || 0) / 10,
       };
     });
 
-    const benchPlayers = currentSquad.filter(p => p.position > 11);
-    const starterPlayers = currentSquad.filter(p => p.position <= 11);
-    
-    // Calculate maximum affordable player price
-    const maxSellValue = Math.max(...currentSquad.map(p => p.sellPrice));
-    const maxPlayerPrice = bank + maxSellValue;
-    
-    // Find affordable upgrades for bench
-    const benchUpgrades: TransferTarget[] = [];
-    for (const benchPlayer of benchPlayers.slice(0, 3)) { // Top 3 bench improvements
-      if (!benchPlayer.player) continue;
-      
-      const position = POSITION_MAP[benchPlayer.player.element_type];
-      const budget = bank + benchPlayer.sellPrice;
-      
-      const upgrade = allPlayers
-        .filter(p => POSITION_MAP[p.element_type] === position)
-        .filter(p => p.now_cost / 10 <= budget)
-        .filter(p => p.id !== benchPlayer.element)
-        .sort((a, b) => b.total_points - a.total_points)[0];
-        
-      if (upgrade) {
-        benchUpgrades.push({
-          playerId: upgrade.id,
-          name: upgrade.web_name,
-          position,
-          teamId: upgrade.team,
-          teamName: teams.find(t => t.id === upgrade.team)?.short_name || 'Unknown',
-          price: upgrade.now_cost / 10,
-          expectedPoints: upgrade.total_points / Math.max(1, 10) * 5,
-          reason: `Upgrade from ${benchPlayer.player.web_name} - better fixtures ahead`
-        });
-      }
+    const filteredSquad = currentSquad.filter(entry => entry.player);
+
+    if (filteredSquad.length === 0) {
+      return {
+        bank,
+        teamValue,
+        freeTransfers,
+        nextDeadline,
+        canAfford: {
+          maxPlayerPrice: bank,
+          benchUpgrades: [],
+          starterUpgrades: [],
+        },
+      };
     }
-    
-    // Find affordable upgrades for starters
-    const starterUpgrades: TransferTarget[] = [];
-    for (const starterPlayer of starterPlayers.slice(0, 3)) { // Top 3 starter improvements
-      if (!starterPlayer.player) continue;
-      
-      const position = POSITION_MAP[starterPlayer.player.element_type];
-      const budget = bank + starterPlayer.sellPrice;
-      
-      const upgrade = allPlayers
-        .filter(p => POSITION_MAP[p.element_type] === position)
-        .filter(p => p.now_cost / 10 <= budget)
-        .filter(p => p.id !== starterPlayer.element)
-        .filter(p => p.total_points > starterPlayer.player!.total_points)
+
+    const benchPlayers = filteredSquad.filter(p => p.position > 11);
+    const starterPlayers = filteredSquad.filter(p => p.position <= 11);
+
+    const maxSellValue = filteredSquad.reduce((max, entry) => Math.max(max, entry.sellPrice), 0);
+    const maxPlayerPrice = bank + maxSellValue;
+
+    const benchUpgrades: TransferTarget[] = [];
+    for (const benchPlayer of benchPlayers.slice(0, 3)) {
+      const source = benchPlayer.player!;
+      const position = POSITION_MAP[source.element_type] ?? "MID";
+      const budget = bank + benchPlayer.sellPrice;
+
+      const upgrade = playerPool
+        .filter(candidate => POSITION_MAP[candidate.element_type] === position)
+        .filter(candidate => candidate.now_cost / 10 <= budget)
+        .filter(candidate => candidate.id !== benchPlayer.element)
         .sort((a, b) => b.total_points - a.total_points)[0];
-        
-      if (upgrade) {
-        starterUpgrades.push({
-          playerId: upgrade.id,
-          name: upgrade.web_name,
-          position,
-          teamId: upgrade.team,
-          teamName: teams.find(t => t.id === upgrade.team)?.short_name || 'Unknown',
-          price: upgrade.now_cost / 10,
-          expectedPoints: upgrade.total_points / Math.max(1, 10) * 5,
-          reason: `Significant upgrade from ${starterPlayer.player.web_name} - premium option`
-        });
+
+      if (!upgrade) {
+        continue;
       }
+
+      const upgradeTeam = teamIndex.get(upgrade.team);
+      benchUpgrades.push({
+        playerId: upgrade.id,
+        name: upgrade.web_name,
+        position,
+        teamId: upgrade.team,
+        teamName: upgradeTeam?.short_name || upgradeTeam?.name || "Unknown",
+        price: upgrade.now_cost / 10,
+        expectedPoints: upgrade.total_points,
+        reason: `Upgrade from ${source.web_name} - better fixtures ahead`,
+      });
+    }
+
+    const starterUpgrades: TransferTarget[] = [];
+    for (const starterPlayer of starterPlayers.slice(0, 3)) {
+      const source = starterPlayer.player!;
+      const position = POSITION_MAP[source.element_type] ?? "MID";
+      const budget = bank + starterPlayer.sellPrice;
+
+      const upgrade = playerPool
+        .filter(candidate => POSITION_MAP[candidate.element_type] === position)
+        .filter(candidate => candidate.now_cost / 10 <= budget)
+        .filter(candidate => candidate.id !== starterPlayer.element)
+        .filter(candidate => candidate.total_points > source.total_points)
+        .sort((a, b) => b.total_points - a.total_points)[0];
+
+      if (!upgrade) {
+        continue;
+      }
+
+      const upgradeTeam = teamIndex.get(upgrade.team);
+      starterUpgrades.push({
+        playerId: upgrade.id,
+        name: upgrade.web_name,
+        position,
+        teamId: upgrade.team,
+        teamName: upgradeTeam?.short_name || upgradeTeam?.name || "Unknown",
+        price: upgrade.now_cost / 10,
+        expectedPoints: upgrade.total_points,
+        reason: `Significant upgrade from ${source.web_name} - premium option`,
+      });
     }
 
     return {
@@ -315,8 +595,8 @@ export class AnalysisEngine {
       canAfford: {
         maxPlayerPrice,
         benchUpgrades: benchUpgrades.slice(0, 5),
-        starterUpgrades: starterUpgrades.slice(0, 5)
-      }
+        starterUpgrades: starterUpgrades.slice(0, 5),
+      },
     };
   }
 
@@ -672,21 +952,20 @@ export class AnalysisEngine {
     return 4.5; // Very hard
   }
 
-  private async runSquadSimulation(
-    players: ProcessedPlayer[], 
-    fixtures: FPLFixture[], 
+  private buildSimulationContext(
+    players: ProcessedPlayer[],
+    fixtures: FPLFixture[],
     oddsData: MatchOdds[]
-  ): Promise<SimulationSummary> {
-    // Prepare fixtures for simulation
+  ): { gameweekFixtures: GameweekFixture[]; config: SimulationConfig } {
     const gameweekFixtures: GameweekFixture[] = [];
-    
+
     fixtures.forEach(fixture => {
       players.forEach(player => {
         if (fixture.team_h === player.teamId || fixture.team_a === player.teamId) {
           const isHome = fixture.team_h === player.teamId;
           const odds = oddsData.find(o => o.fixtureId === fixture.id);
           const fdr = isHome ? fixture.team_h_difficulty : fixture.team_a_difficulty;
-          
+
           gameweekFixtures.push({
             gameweek: fixture.event,
             playerId: player.id,
@@ -699,15 +978,26 @@ export class AnalysisEngine {
       });
     });
 
+    const uniqueGameweeks = Array.from(new Set(fixtures.map(f => f.event))).slice(0, 6);
+
     const config: SimulationConfig = {
-      runs: 1000, // Run 1000 simulations for good statistical power
-      gameweeksToSimulate: Array.from(new Set(fixtures.map(f => f.event))).slice(0, 6), // Next 6 GWs
+      runs: 1000,
+      gameweeksToSimulate: uniqueGameweeks,
       strategy: 'current-squad',
-      targetThreshold: players.reduce((sum, p) => sum + (p.expectedPoints || 0), 0), // Target = sum of expected points
+      targetThreshold: players.reduce((sum, p) => sum + (p.expectedPoints || 0), 0),
       useOdds: oddsData.length > 0,
       useAdvancedStats: players.some(p => p.advancedStats)
     };
 
+    return { gameweekFixtures, config };
+  }
+
+  private async runSquadSimulation(
+    players: ProcessedPlayer[], 
+    fixtures: FPLFixture[], 
+    oddsData: MatchOdds[]
+  ): Promise<SimulationSummary> {
+    const { gameweekFixtures, config } = this.buildSimulationContext(players, fixtures, oddsData);
     return await this.simulationEngine.simulateSquad(players, gameweekFixtures, config);
   }
 
@@ -914,3 +1204,20 @@ export class AnalysisEngine {
     };
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

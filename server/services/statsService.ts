@@ -1,6 +1,6 @@
 import { PlayerAdvanced } from "@shared/schema";
-import axios from 'axios';
 import * as cheerio from 'cheerio';
+import { UnderstatHttpProvider, type ProviderCallMetadata } from './providers';
 
 // Provider interface for different stats APIs
 export interface IStatsProvider {
@@ -8,6 +8,7 @@ export interface IStatsProvider {
   getPlayerAdvanced(playerId: number): Promise<PlayerAdvanced | null>;
   getPlayerAdvancedBatch(playerIds: number[]): Promise<PlayerAdvanced[]>;
   isAvailable(): Promise<boolean>;
+  getMetadata?(): ProviderCallMetadata | null;
 }
 
 // Mock provider for development and fallback
@@ -83,6 +84,10 @@ class MockStatsProvider implements IStatsProvider {
     return true;
   }
 
+  getMetadata(): ProviderCallMetadata | null {
+    return null;
+  }
+
   private inferPosition(playerId: number): 'GK' | 'DEF' | 'MID' | 'FWD' {
     // Simple heuristic based on FPL player ID ranges (approximate)
     if (playerId <= 50) return 'GK';
@@ -94,10 +99,11 @@ class MockStatsProvider implements IStatsProvider {
 
 // Real Understat provider for xG/xA and advanced metrics
 class UnderstatProvider implements IStatsProvider {
-  name = "understat";
+  name = 'understat';
   private cache = new Map<string, any>();
-  private cacheExpiry = 4 * 60 * 60 * 1000; // 4 hours for Understat data
-  private playerNameMap = new Map<number, string>(); // FPL ID to player name mapping
+  private cacheExpiry = 4 * 60 * 60 * 1000; // 4 hours
+  private playerNameMap = new Map<number, string>();
+  private readonly http = new UnderstatHttpProvider();
 
   constructor() {
     this.initializePlayerMapping();
@@ -137,15 +143,8 @@ class UnderstatProvider implements IStatsProvider {
     const url = 'https://understat.com/league/EPL';
     
     try {
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        },
-        timeout: 10000
-      });
-
-      const $ = cheerio.load(response.data);
+      const html = await this.http.fetchLeaguePage('/league/EPL', { timeoutMs: 10000 });
+      const $ = cheerio.load(html);
       
       // Extract JSON data from script tags (Understat embeds data this way)
       let playersData: any[] = [];
@@ -322,12 +321,8 @@ class UnderstatProvider implements IStatsProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      // Quick check to Understat homepage
-      const response = await axios.get('https://understat.com', { 
-        timeout: 5000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      return response.status === 200;
+      await this.http.fetchLeaguePage('/', { timeoutMs: 5000 });
+      return true;
     } catch {
       return false;
     }
@@ -466,10 +461,18 @@ export class StatsService {
   }
 
   // Get provider info
-  getProviderInfo(): { name: string; cached: number } {
+  getProviderInfo(): { name: string; cached: number; metadata?: ProviderCallMetadata | null } {
     return {
       name: this.provider.name,
-      cached: this.cache.size
+      cached: this.cache.size,
+      metadata: this.getProviderMetadata(),
     };
+  }
+
+  getProviderMetadata(): ProviderCallMetadata | null {
+    if (typeof (this.provider as any).getMetadata === "function") {
+      return (this.provider as unknown as { getMetadata(): ProviderCallMetadata | null }).getMetadata();
+    }
+    return null;
   }
 }

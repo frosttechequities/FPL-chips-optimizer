@@ -60,6 +60,10 @@ export class EffectiveOwnershipEngine {
     this.monteCarloEngine = MonteCarloEngine.getInstance();
   }
 
+  public getOwnershipSnapshot(player: ProcessedPlayer): EffectiveOwnershipData {
+    return this.getOwnershipData(player);
+  }
+
   public static getInstance(): EffectiveOwnershipEngine {
     if (!EffectiveOwnershipEngine.instance) {
       EffectiveOwnershipEngine.instance = new EffectiveOwnershipEngine();

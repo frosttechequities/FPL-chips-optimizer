@@ -33,14 +33,17 @@ interface SimulationResult {
   percentiles: {
     p10: number;
     p25: number;
+    p50: number;
     p75: number;
     p90: number;
   };
-  haulingProbability: number; // P(points >= 10)
-  ceilingProbability: number; // P(points >= 15)
-  floorProbability: number;   // P(points <= 2)
+  haulingProbability: number; // Probability of >=10 points (0-1)
+  ceilingProbability: number; // Probability of >=15 points (0-1)
+  floorProbability: number;   // Probability <=2 points (0-1)
   captainEV: number; // Expected value as captain (2x points)
   consistency: number; // Coefficient of variation inverse
+  coefficientOfVariation?: number;
+  runs: number;
 }
 
 export class MonteCarloEngine {
@@ -455,7 +458,7 @@ export class MonteCarloEngine {
   private createFallbackResult(playerId: number, expectedPoints: number): SimulationResult {
     return {
       playerId,
-      simulations: Array(100).fill(expectedPoints),
+      simulations: Array(this.SIMULATION_RUNS).fill(expectedPoints),
       expectedPoints,
       median: expectedPoints,
       mode: Math.round(expectedPoints),
@@ -463,14 +466,17 @@ export class MonteCarloEngine {
       percentiles: {
         p10: Math.max(0, expectedPoints - 2),
         p25: Math.max(0, expectedPoints - 1),
+        p50: expectedPoints,
         p75: expectedPoints + 2,
         p90: expectedPoints + 4
       },
-      haulingProbability: expectedPoints > 6 ? 0.1 : 0.05,
+      haulingProbability: 0.1,
       ceilingProbability: 0.02,
-      floorProbability: expectedPoints < 3 ? 0.3 : 0.1,
+      floorProbability: 0.1,
       captainEV: expectedPoints * 2,
-      consistency: 0.5
+      consistency: 0.5,
+      coefficientOfVariation: undefined,
+      runs: this.SIMULATION_RUNS
     };
   }
 
@@ -502,6 +508,11 @@ export class MonteCarloEngine {
     
     return results;
   }
+
+  getSimulationRuns(): number {
+    return this.SIMULATION_RUNS;
+  }
+
 
   getEngineInfo(): Record<string, any> {
     return {

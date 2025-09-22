@@ -122,7 +122,49 @@ export interface PlayerSimOutcome {
   bestGameweek: number; // gameweek with highest expected return
   worstGameweek: number; // gameweek with lowest expected return
   confidence: number; // confidence in prediction (0-100)
+  // Phase 2 probabilistic metadata
+  p25?: number; // 25th percentile outcome
+  p75?: number; // 75th percentile outcome
+  ceilingProbability?: number; // Probability of exceeding high-upside threshold
+  floorProbability?: number; // Probability of blanking
+  haulProbability?: number; // Probability of 10+ haul
+  captainEV?: number; // Expected value when captained
+  coefficientOfVariation?: number; // Risk metric (std dev / mean)
 }
+
+export interface PlayerSimulation {
+  playerId: number;
+  generatedAt: string;
+  runs: number;
+  meanPoints: number;
+  medianPoints: number;
+  p10: number;
+  p25: number;
+  p75: number;
+  p90: number;
+  standardDeviation: number;
+  haulProbability: number;
+  floorProbability: number;
+  ceilingProbability: number;
+  captainEV: number;
+  coefficientOfVariation?: number;
+}
+
+export type PlayerArchetype = 'template' | 'balanced' | 'differential' | 'boom-bust';
+
+export interface EffectiveOwnershipSnapshot {
+  playerId: number;
+  totalOwnership: number;
+  topOwnership: number;
+  activeOwnership: number;
+  captaincy: number;
+  topCaptaincy: number;
+  effectiveOwnership: number;
+  topEffectiveOwnership: number;
+  ownershipTier: 'template' | 'balanced' | 'differential';
+  riskTier: 'steady' | 'volatile';
+}
+
 
 // Simulation summary for the entire squad or chip strategy
 export interface SimulationSummary {
@@ -322,6 +364,7 @@ export interface ConversationContext {
     budget?: number;
   };
   currentAnalysis?: {
+    teamId?: string;
     teamData?: any;
     lastAnalyzed?: string;
     activeChips?: string[];
@@ -360,8 +403,49 @@ export interface AIInsight {
     expectedPoints?: number;
     riskLevel?: 'low' | 'medium' | 'high';
   };
+
   lastUpdated: string;
 }
+export interface FeatureContribution {
+  feature: string;
+  value: number;
+  baseline: number;
+  contribution: number;
+  weight: number;
+  impact: 'positive' | 'negative';
+  description: string;
+}
+
+export interface AIExplanation {
+  title: string;
+  summary: string;
+  confidence: number;
+  policyVersion?: string;
+  provenance?: {
+    modelId?: string;
+    algorithm?: string;
+    trainedAt?: string;
+    validationScore?: number;
+    rewardMean?: number;
+    checksum?: string;
+  };
+  guardrails?: {
+    fallbackUsed: boolean;
+    reason?: string;
+  };
+  reasoningTrace?: Array<{
+    step: string;
+    detail: string;
+    impact?: 'positive' | 'negative';
+  }>;
+  factors: FeatureContribution[];
+  confidenceIntervals?: {
+    lower: number;
+    upper: number;
+  };
+  alternatives?: string[];
+}
+
 
 // Comprehensive AI co-pilot response
 export interface AICopilotResponse {
@@ -374,6 +458,7 @@ export interface AICopilotResponse {
     confidence: number;
     dataUsed: string[];
   };
+  explanations?: AIExplanation[];
   conversationContext: {
     intent: QueryIntent;
     responseTime: number;
@@ -413,6 +498,11 @@ export interface ProcessedPlayer {
   volatility?: number; // Standard deviation of points (explosiveness metric)
   advancedStats?: PlayerAdvanced; // Advanced statistics
   simOutcome?: PlayerSimOutcome; // Monte Carlo simulation results
+  coefficientOfVariation?: number; // Risk metric derived from simulations
+  archetype?: PlayerArchetype; // Player risk/ownership profile
+  riskTier?: 'steady' | 'volatile'; // Volatility classification
+  effectiveOwnership?: EffectiveOwnershipSnapshot; // Ownership intelligence
+  rankUpsideScore?: number; // Expected rank gain potential metric
   
   // Enhanced Phase 2: Machine Learning data
   mlPrediction?: MLPrediction; // ML prediction for this player
@@ -624,6 +714,67 @@ export const analyzeTeamResponseSchema = z.object({
         fixtureAdjustedXG: z.number(),
         fixtureAdjustedXA: z.number(),
         lastUpdated: z.string()
+      }).optional(),
+      simOutcome: z.object({
+        playerId: z.number(),
+        gameweeksSimulated: z.number(),
+        meanPoints: z.number(),
+        p10: z.number(),
+        p50: z.number(),
+        p90: z.number(),
+        standardDeviation: z.number(),
+        haulsCount: z.number(),
+        blankCount: z.number(),
+        bestGameweek: z.number(),
+        worstGameweek: z.number(),
+        confidence: z.number(),
+        p25: z.number().optional(),
+        p75: z.number().optional(),
+        ceilingProbability: z.number().optional(),
+        floorProbability: z.number().optional(),
+        haulProbability: z.number().optional(),
+        captainEV: z.number().optional(),
+        coefficientOfVariation: z.number().optional()
+      }).optional(),
+      coefficientOfVariation: z.number().optional(),
+      archetype: z.enum(['template', 'balanced', 'differential', 'boom-bust']).optional(),
+      riskTier: z.enum(['steady', 'volatile']).optional(),
+      effectiveOwnership: z.object({
+        playerId: z.number(),
+        totalOwnership: z.number(),
+        topOwnership: z.number(),
+        activeOwnership: z.number(),
+        captaincy: z.number(),
+        topCaptaincy: z.number(),
+        effectiveOwnership: z.number(),
+        topEffectiveOwnership: z.number(),
+        ownershipTier: z.enum(['template', 'balanced', 'differential']),
+        riskTier: z.enum(['steady', 'volatile'])
+      }).optional(),
+      rankUpsideScore: z.number().optional(),
+      
+      // Enhanced Phase 2: Machine Learning data
+      mlPrediction: z.object({
+        playerId: z.number(),
+        predictedPoints: z.number(),
+        confidence: z.number(),
+        floor: z.number(),
+        ceiling: z.number(),
+        modelVersion: z.string(),
+        features: z.object({
+          form: z.number(),
+          fixtures: z.number(),
+          price: z.number(),
+          ownership: z.number(),
+          historical: z.number()
+        }),
+        riskFactors: z.object({
+      
+    injuryRisk: z.number(),
+          rotationRisk: z.number(),
+          priceDrop: z.number()
+        }).optional(),
+        lastUpdated: z.string()
       }).optional()
     })),
     totalValue: z.number(),
@@ -727,10 +878,123 @@ export const analyzeTeamResponseSchema = z.object({
     dataFreshness: z.object({
       odds: z.string(),
       stats: z.string(),
-      fpl: z.string()
+      fpl: z.string(),
+      fixtures: z.string().optional(),
+      ml: z.string().optional(),
+      competitiveIntelligence: z.string().optional()
     }).optional()
   }).optional(),
   error: z.string().optional()
 });
 
 export type AnalyzeTeamResponse = z.infer<typeof analyzeTeamResponseSchema>;
+
+
+export interface CausalInsight {
+  insightId: string;
+  experimentKey: string;
+  hypothesis: string;
+  population?: Record<string, unknown> | null;
+  timeWindowStart: string;
+  timeWindowEnd: string;
+  exposure: Record<string, unknown>;
+  outcome: Record<string, unknown>;
+  confounders?: Array<Record<string, unknown>>;
+  effectEstimate?: Record<string, number>;
+  tags?: string[];
+  status: 'draft' | 'ready' | 'published';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const causalInsightSchema = z.object({
+  insightId: z.string(),
+  experimentKey: z.string(),
+  hypothesis: z.string(),
+  population: z.record(z.unknown()).nullable().optional(),
+  timeWindowStart: z.string(),
+  timeWindowEnd: z.string(),
+  exposure: z.record(z.unknown()),
+  outcome: z.record(z.unknown()),
+  confounders: z.array(z.record(z.unknown())).optional(),
+  effectEstimate: z.record(z.number()).optional(),
+  tags: z.array(z.string()).optional(),
+  status: z.enum(['draft', 'ready', 'published']),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const causalInsightsResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(causalInsightSchema).optional(),
+  error: z.string().optional(),
+});
+
+export type CausalInsightsResponse = z.infer<typeof causalInsightsResponseSchema>;
+
+export interface StrategyModelSummary {
+  modelId: string;
+  version: string;
+  status: 'active' | 'staging' | 'archived';
+  algorithm: string;
+  checksum: string;
+  rewardMean: number;
+  rewardStd?: number;
+  validationScore?: number;
+  trainingEpisodes: number;
+  createdAt: string;
+  updatedAt: string;
+  featureNames: string[];
+  featureImportance?: Array<{ feature: string; weight: number }>;
+  evaluationSeasons?: string[];
+  driftIndicator?: number;
+  notes?: string;
+}
+
+export interface StrategyPolicyMetadata extends StrategyModelSummary {
+  featureMeans: Record<string, number>;
+  featureStd?: Record<string, number>;
+  hyperparameters?: Record<string, number | string>;
+  evaluation?: {
+    validationScore?: number;
+    heuristicBaseline?: number;
+    uplift?: number;
+  };
+}
+
+export interface StrategyPolicyPayload {
+  featureWeights: Record<string, number>;
+  bias: number;
+  temperature: number;
+}
+
+export const strategyModelSummarySchema = z.object({
+  modelId: z.string(),
+  version: z.string(),
+  status: z.enum(['active', 'staging', 'archived']),
+  algorithm: z.string(),
+  checksum: z.string(),
+  rewardMean: z.number(),
+  rewardStd: z.number().optional(),
+  validationScore: z.number().optional(),
+  trainingEpisodes: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  featureNames: z.array(z.string()),
+  featureImportance: z.array(z.object({
+    feature: z.string(),
+    weight: z.number(),
+  })).optional(),
+  evaluationSeasons: z.array(z.string()).optional(),
+  driftIndicator: z.number().optional(),
+  notes: z.string().optional(),
+});
+
+export const strategyModelsResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(strategyModelSummarySchema).optional(),
+  error: z.string().optional(),
+});
+
+export type StrategyModelsResponse = z.infer<typeof strategyModelsResponseSchema>;
+
