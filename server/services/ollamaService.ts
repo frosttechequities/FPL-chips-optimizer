@@ -89,19 +89,26 @@ export class OllamaService extends BaseAIService {
   }
 
   async generateFPLResponse(
-    systemPrompt: string,
-    userPrompt: string,
-    options: { temperature?: number; maxTokens?: number } = {}
+    userQuery: string,
+    fplContext: any,
+    conversationHistory: Array<{ role: string; content: string }> = []
   ): Promise<string> {
     try {
+      // Build system prompt from FPL context
+      const systemPrompt = this.buildFPLSystemPrompt(fplContext);
+
       const messages: OllamaMessage[] = [
         {
           role: 'system',
           content: systemPrompt
         },
+        ...conversationHistory.slice(-4).map(msg => ({
+          role: msg.role === 'assistant' ? 'assistant' : 'user' as 'user' | 'assistant' | 'system',
+          content: msg.content
+        })),
         {
           role: 'user',
-          content: userPrompt
+          content: userQuery
         }
       ];
 
@@ -110,8 +117,8 @@ export class OllamaService extends BaseAIService {
         messages,
         stream: false,
         options: {
-          temperature: options.temperature ?? this.config.temperature,
-          num_predict: options.maxTokens ?? this.config.maxTokens,
+          temperature: this.config.temperature,
+          num_predict: this.config.maxTokens,
           top_p: 0.9,
           top_k: 40
         }
@@ -226,4 +233,30 @@ export class OllamaService extends BaseAIService {
   }
 
   private static instance: OllamaService;
+
+  /**
+   * Build FPL system prompt
+   */
+  private buildFPLSystemPrompt(fplContext: any): string {
+    const { intent, entities, squadData, liveFPLData } = fplContext;
+
+    const players = liveFPLData?.players || [];
+    const allowedPlayerNames = players.map((p: any) => p.name).filter(Boolean);
+
+    let prompt = `You are an expert Fantasy Premier League (FPL) assistant. `;
+
+    if (squadData) {
+      prompt += `You have access to a squad with £${squadData.teamValue}m value, £${squadData.bank}m bank, and ${squadData.freeTransfers} free transfers. `;
+    }
+
+    prompt += `The user is asking about: ${intent}. `;
+
+    if (allowedPlayerNames.length > 0) {
+      prompt += `ONLY mention these players from their squad: ${allowedPlayerNames.join(', ')}. `;
+    }
+
+    prompt += `Provide helpful, specific FPL advice. Keep responses under 200 words. Be direct and actionable.`;
+
+    return prompt;
+  }
 }
