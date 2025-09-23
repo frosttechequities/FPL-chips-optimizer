@@ -121,9 +121,9 @@ export default function TransferPlanner({
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {budget.canAfford.benchUpgrades.slice(0, 3).map((target: TransferTarget) => (
-                <div 
-                  key={target.playerId} 
+              {budget.canAfford.benchUpgrades.slice(0, 3).map((target: TransferTarget, index: number) => (
+                <div
+                  key={`bench-${target.playerId}-${index}`}
                   className="flex items-center justify-between p-3 bg-muted/30 rounded-lg border border-border hover-elevate"
                   data-testid={`bench-upgrade-${target.playerId}`}
                 >
@@ -163,9 +163,9 @@ export default function TransferPlanner({
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {budget.canAfford.starterUpgrades.slice(0, 3).map((target: TransferTarget) => (
-                <div 
-                  key={target.playerId} 
+              {budget.canAfford.starterUpgrades.slice(0, 3).map((target: TransferTarget, index: number) => (
+                <div
+                  key={`starter-${target.playerId}-${index}`}
                   className="flex items-center justify-between p-3 bg-muted/30 rounded-lg border border-border hover-elevate"
                   data-testid={`starter-upgrade-${target.playerId}`}
                 >

@@ -3,9 +3,9 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { DataPipeline } from "./services/dataPipeline";
 
-if (!process.env.OPENROUTER_API_KEY) {
-  process.env.OPENROUTER_API_KEY = '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';
-}
+// API keys should be set via environment variables
+// process.env.HUGGINGFACE_API_KEY = 'your-huggingface-key-here';
+// process.env.GOOGLE_AI_API_KEY = 'your-google-ai-key-here';
 
 const app = express();
 app.use(express.json());
@@ -14,6 +14,12 @@ app.use(express.urlencoded({ extended: false }));
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
+
+  // Special logging for chat endpoint
+  if (path === '/api/chat') {
+    console.log(`🎯 [SERVER] Chat request received: ${req.method} ${path}`);
+  }
+
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
 
   const originalResJson = res.json;

@@ -10,14 +10,68 @@ import { AnalysisEngine } from './analysisEngine';
 import { MLPredictionEngine } from './mlPredictionEngine';
 import { TransferEngine } from './transferEngine';
 import { CompetitiveIntelligenceEngine } from './competitiveIntelligenceEngine';
-import { OpenRouterService } from './openRouterService';
-import { 
-  ChatMessage, 
-  ConversationContext, 
-  QueryIntent, 
-  AICopilotResponse, 
+import { GoogleAIService } from './googleAIService';
+import { OllamaService } from './ollamaService';
+import { BaseAIService } from './baseAIService';
+
+// Adapter to make GoogleAIService compatible with BaseAIService
+class GoogleAIServiceAdapter implements BaseAIService {
+  private googleService: GoogleAIService;
+
+  constructor() {
+    this.googleService = GoogleAIService.getInstance();
+  }
+
+  async generateCompletion(prompt: string | Array<{ role: string; content: string }>, options?: { temperature?: number; maxTokens?: number }): Promise<string> {
+    if (typeof prompt === 'string') {
+      return this.googleService.generateCompletion([{ role: 'user', content: prompt }], options);
+    } else {
+      return this.googleService.generateCompletion(prompt, options);
+    }
+  }
+
+  async generateFPLResponse(systemPrompt: string, userPrompt: string, options?: { temperature?: number; maxTokens?: number }): Promise<string> {
+    // For Google AI, we need to construct the FPL context
+    // This is a simplified version - the full context is built in the copilot service
+    const fplContext = {
+      intent: 'general_fpl_query',
+      entities: {},
+      squadData: null,
+      analysisData: null,
+      recommendations: [],
+      liveFPLData: null
+    };
+
+    return this.googleService.generateFPLResponse(userPrompt, fplContext);
+  }
+
+  async isHealthy(): Promise<boolean> {
+    return this.googleService.isHealthy();
+  }
+
+  isConfigured(): boolean {
+    return this.googleService.isConfigured();
+  }
+
+  async generateCompletionSafe(messages: Array<{ role: string; content: string }>, options?: { model?: string; maxTokens?: number; temperature?: number; timeoutMs?: number; liteFallbackMessages?: Array<{ role: string; content: string }> }): Promise<string> {
+    return this.googleService.generateCompletionSafe(messages, options);
+  }
+
+  async generateFPLStructuredResponse(userQuery: string, fplContext: any, conversationHistory?: Array<{ role: string; content: string }>): Promise<any> {
+    return this.googleService.generateFPLStructuredResponse(userQuery, fplContext, conversationHistory);
+  }
+
+  formatStructuredToText(structured: any, context?: any): string {
+    return this.googleService.formatStructuredToText(structured, context);
+  }
+}
+import {
+  ChatMessage,
+  ConversationContext,
+  QueryIntent,
+  AICopilotResponse,
   AIInsight,
-  ProcessedPlayer 
+  ProcessedPlayer
 } from '@shared/schema';
 
 interface ConversationSession {
@@ -31,7 +85,7 @@ export class AICopilotService {
   private analysisEngine: AnalysisEngine;
   private mlEngine: MLPredictionEngine;
   private competitiveEngine: CompetitiveIntelligenceEngine;
-  private llmService: OpenRouterService;
+  private llmService!: BaseAIService;
   private transferEngine: TransferEngine;
   private sessions = new Map<string, ConversationSession>();
   private readonly SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
@@ -41,11 +95,35 @@ export class AICopilotService {
     this.analysisEngine = new AnalysisEngine();
     this.mlEngine = MLPredictionEngine.getInstance();
     this.competitiveEngine = CompetitiveIntelligenceEngine.getInstance();
-    this.llmService = OpenRouterService.getInstance();
+
+    // Try Ollama first (local, unlimited), then Google AI (cloud, limited)
+    this.initializeAIService();
+
     this.transferEngine = new TransferEngine();
-    
+
     // Clean up expired sessions periodically
     setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000); // Every 5 minutes
+  }
+
+  private async initializeAIService(): Promise<void> {
+    try {
+      const ollamaService = OllamaService.getInstance();
+      // Test if Ollama is healthy
+      const isHealthy = await ollamaService.isHealthy();
+      if (isHealthy) {
+        console.log('🤖 [AI COPILOT] Using Ollama for AI responses (unlimited usage)');
+        this.llmService = ollamaService;
+        return;
+      } else {
+        console.log('⚠️ [AI COPILOT] Ollama not healthy, falling back to Google AI');
+      }
+    } catch (error) {
+      console.error('❌ [AI COPILOT] Ollama initialization failed:', error);
+      console.log('🔄 [AI COPILOT] Falling back to Google AI');
+    }
+
+    // Fallback to Google AI
+    this.llmService = new GoogleAIServiceAdapter();
   }
 
   public static getInstance(): AICopilotService {
@@ -59,23 +137,46 @@ export class AICopilotService {
    * Process a natural language chat message and generate intelligent response
    */
   async processChatMessage(
-    message: string, 
-    sessionId: string, 
+    message: string,
+    sessionId: string,
     teamId?: string,
     userId?: string,
     requestId?: string
   ): Promise<AICopilotResponse> {
     const startTime = Date.now();
-    
+    console.log('🔍 [AI COPILOT] Processing chat message:', {
+      message,
+      sessionId,
+      teamId,
+      userId,
+      requestId,
+      timestamp: new Date().toISOString()
+    });
+
     try {
       // Get or create conversation context
       const context = await this.getOrCreateContext(sessionId, teamId, userId);
-      
+      console.log('📝 [AI COPILOT] Context loaded:', {
+        sessionId,
+        hasTeamId: !!context.teamId,
+        messageCount: context.messages.length,
+        lastUpdated: context.lastUpdated
+      });
+
       // Process the natural language query
       const nlpStart = Date.now();
       const intent = await this.nlProcessor.processQuery(message);
       const nlpMs = Date.now() - nlpStart;
-      
+
+      console.log('🧠 [AI COPILOT] Intent recognition:', {
+        intent: intent.type,
+        confidence: intent.confidence,
+        entities: intent.entities,
+        originalQuery: intent.originalQuery,
+        processedQuery: intent.processedQuery,
+        nlpProcessingTime: nlpMs + 'ms'
+      });
+
       // Check confidence threshold for clarification (per-intent thresholds)
       const getConfidenceThreshold = (intentType: string): number => {
         switch (intentType) {
@@ -88,11 +189,22 @@ export class AICopilotService {
           default: return 40;
         }
       };
-      
+
       const threshold = getConfidenceThreshold(intent.type);
+      console.log('⚖️ [AI COPILOT] Confidence check:', {
+        intentType: intent.type,
+        confidence: intent.confidence,
+        threshold,
+        needsClarification: intent.confidence < threshold
+      });
+
       if (intent.confidence < threshold) {
         const clarificationMessage = this.nlProcessor.generateClarificationQuestion(message, intent.entities);
-        
+        console.log('❓ [AI COPILOT] Returning clarification response:', {
+          clarificationMessage,
+          totalProcessingTime: Date.now() - startTime + 'ms'
+        });
+
         return {
           message: clarificationMessage,
           insights: [],
@@ -196,33 +308,50 @@ export class AICopilotService {
    * Generate intelligent response based on query intent
    */
   private async generateResponse(intent: QueryIntent, context: ConversationContext): Promise<AICopilotResponse> {
+    console.log('🎯 [AI COPILOT] Generating response for intent:', {
+      intentType: intent.type,
+      hasTeamId: !!context.teamId,
+      llmConfigured: this.llmService.isConfigured()
+    });
+
     // Try to generate LLM-enhanced response first
     if (this.llmService.isConfigured()) {
+      console.log('🤖 [AI COPILOT] Attempting LLM-enhanced response generation');
       try {
-        return await this.generateLLMEnhancedResponse(intent, context);
+        const llmResponse = await this.generateLLMEnhancedResponse(intent, context);
+        console.log('✅ [AI COPILOT] LLM response generated successfully:', {
+          messageLength: llmResponse.message.length,
+          insightsCount: llmResponse.insights.length,
+          suggestionsCount: llmResponse.suggestions.length,
+          analysisPerformed: !!llmResponse.analysisPerformed
+        });
+        return llmResponse;
       } catch (error) {
-        console.warn('LLM generation failed, falling back to static responses:', error);
+        console.error('❌ [AI COPILOT] LLM generation failed, falling back to static responses:', error);
         // Fall through to static responses
       }
+    } else {
+      console.log('⚠️ [AI COPILOT] LLM service not configured, using static responses');
     }
 
     // Fallback to static responses
+    console.log('🔄 [AI COPILOT] Using static response handler for:', intent.type);
     switch (intent.type) {
       case 'squad_analysis':
         return this.handleSquadAnalysis(intent, context);
-      
+
       case 'chip_strategy':
         return this.handleChipStrategy(intent, context);
-      
+
       case 'transfer_suggestions':
         return this.handleTransferSuggestions(intent, context);
-      
+
       case 'player_comparison':
         return this.handlePlayerComparison(intent, context);
-      
+
       case 'fixture_analysis':
         return this.handleFixtureAnalysis(intent, context);
-      
+
       case 'general_advice':
       default:
         return this.handleGeneralAdvice(intent, context);
@@ -233,6 +362,12 @@ export class AICopilotService {
    * Generate LLM-enhanced response with live FPL data (RAG Architecture)
    */
   private async generateLLMEnhancedResponse(intent: QueryIntent, context: ConversationContext): Promise<AICopilotResponse> {
+    console.log('🔄 [AI COPILOT] Starting LLM-enhanced response generation:', {
+      intentType: intent.type,
+      hasTeamId: !!context.teamId,
+      teamId: context.teamId
+    });
+
     // Fetch LIVE FPL data for accurate responses (RAG approach)
     let analysisData: any = null;
     let squadData: any = null;
@@ -242,7 +377,18 @@ export class AICopilotService {
     try {
       // Always get fresh analysis data to prevent hallucinations
       if (context.teamId) {
+        console.log('📊 [AI COPILOT] Fetching team analysis data for team:', context.teamId);
+        const analysisStart = Date.now();
         analysisData = await this.analysisEngine.analyzeTeam(context.teamId);
+        const analysisTime = Date.now() - analysisStart;
+
+        console.log('✅ [AI COPILOT] Team analysis completed:', {
+          analysisTime: analysisTime + 'ms',
+          playerCount: analysisData.players?.length || 0,
+          gameweekCount: analysisData.gameweeks?.length || 0,
+          recommendationCount: analysisData.recommendations?.length || 0
+        });
+
         squadData = {
           teamValue: analysisData.budget?.teamValue || 100,
           bank: analysisData.budget?.bank || 0,
@@ -250,10 +396,10 @@ export class AICopilotService {
           teamName: analysisData.teamName || 'Your team'
         };
         recommendations = analysisData.recommendations || [];
-        
-        // Extract live player data for context
+
+        // Extract live player data for context - ALL players, not just first few
         liveFPLData = {
-          players: analysisData.players?.slice(0, 15).map((p: any) => ({
+          players: (analysisData.players || []).map((p: any) => ({
             name: p.name,
             position: p.position,
             team: p.team,
@@ -263,12 +409,12 @@ export class AICopilotService {
             form: p.volatility || 0,
             isStarter: p.isStarter,
             isBench: p.isBench
-          })) || [],
+          })),
           nextFixtures: analysisData.gameweeks?.slice(0, 3).map((gw: any) => ({
             gameweek: gw.gameweek,
             difficulty: gw.difficulty,
             averageFDR: gw.averageFDR,
-            keyFixtures: gw.fixtures?.slice(0, 5).map((f: any) => 
+            keyFixtures: gw.fixtures?.slice(0, 5).map((f: any) =>
               `${f.playerName} vs ${f.opponent} (${f.isHome ? 'H' : 'A'}, FDR: ${f.fdr})`
             ) || []
           })) || [],
@@ -280,7 +426,15 @@ export class AICopilotService {
             confidence: r.confidence || 0
           }))
         };
+
+        console.log('📋 [AI COPILOT] Prepared RAG context data:', {
+          squadData,
+          playerCount: liveFPLData.players.length,
+          fixtureCount: liveFPLData.nextFixtures.length,
+          chipRecommendationCount: liveFPLData.chipRecommendations.length
+        });
       } else {
+        console.log('⚠️ [AI COPILOT] No team ID available, returning data request message');
         // No Team ID available - return data request message instead of proceeding
         return {
           message: "I'd love to help with your FPL strategy! To give you accurate, personalized advice about players like Watkins, I need to analyze your actual squad first. Could you please provide your Team ID so I can see your current players, their prices, and upcoming fixtures?",
@@ -303,7 +457,7 @@ export class AICopilotService {
         };
       }
     } catch (error) {
-      console.warn('Failed to get live FPL data for AI context:', error);
+      console.error('❌ [AI COPILOT] Failed to get live FPL data for AI context:', error);
       // Return data unavailable message instead of proceeding without data
       return {
         message: "I'm having trouble accessing your FPL data right now. To give you accurate advice about specific players, I need access to current squad and fixture information. Please try again in a moment, or provide your Team ID if you haven't already.",
@@ -336,13 +490,26 @@ export class AICopilotService {
 
     // Get the user's current query
     const currentQuery = context.messages[context.messages.length - 1]?.content || intent.originalQuery;
+    console.log('💬 [AI COPILOT] Current query for LLM:', {
+      currentQuery,
+      conversationHistoryLength: conversationHistory.length
+    });
 
     // Structured path first (preferred)
+    console.log('🏗️ [AI COPILOT] Attempting structured LLM response generation');
+    const structuredStart = Date.now();
     const structured = await this.llmService.generateFPLStructuredResponse(
       currentQuery,
       { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
       conversationHistory
     );
+    const structuredTime = Date.now() - structuredStart;
+
+    console.log('📋 [AI COPILOT] Structured response result:', {
+      structuredResponseReceived: !!structured,
+      structuredGenerationTime: structuredTime + 'ms',
+      structuredType: structured ? 'structured' : 'null'
+    });
 
     // Build allowed validation sets
     const allowedNames: string[] = (liveFPLData?.players || []).map((p: any) => (p.name as string)).filter(Boolean);
@@ -357,51 +524,103 @@ export class AICopilotService {
       }
     } catch {}
 
+    console.log('🔒 [AI COPILOT] Validation sets built:', {
+      allowedPlayerCount: allowedNames.length,
+      allowedFixtureCount: allowedFixturesSet.size
+    });
+
     let finalMessage: string;
     if (structured) {
+      console.log('✅ [AI COPILOT] Using structured response path');
       // Validate structured content
+      const originalPlayersUsed = structured.playersUsed?.length || 0;
+      const originalFixturesUsed = structured.fixturesUsed?.length || 0;
+
       structured.playersUsed = (structured.playersUsed || []).filter((n: any) => typeof n === 'string' && allowedNameSet.has(n.toLowerCase()));
       structured.fixturesUsed = (structured.fixturesUsed || []).filter((fx: any) => {
         if (!fx || typeof fx.player !== 'string' || typeof fx.opponent !== 'string') return false;
         const key = `${Math.round(fx.gameweek||0)}|${fx.player.toLowerCase()}|${fx.opponent.toLowerCase()}|${fx.isHome?'H':'A'}|${Math.round(fx.fdr||0)}`;
         return allowedFixturesSet.has(key);
       });
+
+      console.log('🔍 [AI COPILOT] Structured content validation:', {
+        originalPlayersUsed,
+        filteredPlayersUsed: structured.playersUsed?.length || 0,
+        originalFixturesUsed,
+        filteredFixturesUsed: structured.fixturesUsed?.length || 0
+      });
+
       finalMessage = this.llmService.formatStructuredToText(structured);
+      console.log('📝 [AI COPILOT] Structured response formatted:', {
+        finalMessageLength: finalMessage.length
+      });
     } else {
+      console.log('🔄 [AI COPILOT] Structured failed, using free-form fallback');
       // Fallback to free-form with sanitizer + rewrite enforcement
+      const freeformStart = Date.now();
       let llmResponse = await this.llmService.generateFPLResponse(
         currentQuery,
         { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
         conversationHistory
       );
+      const freeformTime = Date.now() - freeformStart;
+
+      console.log('📝 [AI COPILOT] Free-form LLM response received:', {
+        responseLength: llmResponse.length,
+        generationTime: freeformTime + 'ms'
+      });
+
       try {
         if (allowedNames.length > 0) {
+          console.log('🔧 [AI COPILOT] Applying player reference sanitization');
           const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
           const rewritten = await this.llmService.generateCompletionSafe([
             { role: 'system', content: rewriteSystem },
             { role: 'user', content: llmResponse }
           ], { maxTokens: 600, timeoutMs: 10000 });
           if (rewritten && rewritten.trim().length > 0) {
+            console.log('✅ [AI COPILOT] Player sanitization applied:', {
+              originalLength: llmResponse.length,
+              rewrittenLength: rewritten.length
+            });
             llmResponse = rewritten;
+          } else {
+            console.log('⚠️ [AI COPILOT] Player sanitization failed or returned empty');
           }
         }
-      } catch {}
+      } catch (error) {
+        console.error('❌ [AI COPILOT] Player sanitization error:', error);
+      }
       finalMessage = llmResponse;
     }
+
     // Enforce allowed player references only (rewrite if needed)
     try {
       const allowedNames2: string[] = (liveFPLData?.players || []).map((p: any) => p.name).filter(Boolean);
       if (allowedNames2.length > 0) {
+        console.log('🔒 [AI COPILOT] Applying final player reference enforcement');
         const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames2.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
         const rewritten = await this.llmService.generateCompletionSafe([
           { role: 'system', content: rewriteSystem },
           { role: 'user', content: finalMessage }
         ], { maxTokens: 600, timeoutMs: 10000 });
         if (rewritten && rewritten.trim().length > 0) {
+          console.log('✅ [AI COPILOT] Final enforcement applied:', {
+            originalLength: finalMessage.length,
+            finalLength: rewritten.length
+          });
           finalMessage = rewritten;
+        } else {
+          console.log('⚠️ [AI COPILOT] Final enforcement failed or returned empty');
         }
       }
-    } catch {}
+    } catch (error) {
+      console.error('❌ [AI COPILOT] Final enforcement error:', error);
+    }
+
+    console.log('🎯 [AI COPILOT] Final response ready:', {
+      finalMessageLength: finalMessage.length
+    });
 
     // Generate insights based on analysis data
     const insights: AIInsight[] = [];

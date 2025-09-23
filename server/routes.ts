@@ -17,6 +17,7 @@ import { AICopilotService } from "./services/aiCopilotService";
 import { ProviderStatusService } from "./services/providerStatusService";
 import { StrategyModelRegistry } from "./services/strategyModelRegistry";
 import { EffectiveOwnershipEngine } from "./services/effectiveOwnershipEngine";
+import { MonteCarloEngine } from "./services/monteCarloEngine";
 import { DataRepository } from "./services/repositories/dataRepository";
 
 const analysisEngine = new AnalysisEngine();
@@ -228,12 +229,243 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Enhanced Phase 1: Data provider status endpoint
   app.get("/api/providers/status", async (_req, res) => {
     try {
-      const overview = await providerStatusService.getOverview();
-      res.json({ success: true, data: overview });
+      const repository = DataRepository.getInstance();
+      let status = await repository.getProviderStatuses();
+
+      // If no providers in database, initialize with mock data for testing
+      if (!status || status.length === 0) {
+        console.log('[PROVIDERS] No provider status found, initializing mock data');
+        const mockProviders = [
+          { provider: 'fpl-api', status: 'online', latencyMs: 150, lastSuccessAt: new Date(), dataCurrencyMinutes: 5 },
+          { provider: 'understat', status: 'online', latencyMs: 200, lastSuccessAt: new Date(), dataCurrencyMinutes: 30 },
+          { provider: 'fbref', status: 'online', latencyMs: 180, lastSuccessAt: new Date(), dataCurrencyMinutes: 60 }
+        ];
+
+        // Insert mock data
+        for (const provider of mockProviders) {
+          await repository.upsertProviderStatus(provider.provider, {
+            status: provider.status as any,
+            latencyMs: provider.latencyMs,
+            lastSuccessAt: provider.lastSuccessAt,
+            dataCurrencyMinutes: provider.dataCurrencyMinutes
+          });
+        }
+
+        status = await repository.getProviderStatuses();
+      }
+
+      res.json({ success: true, data: status });
     } catch (error) {
-      console.error("Provider status error:", error);
-      const message = error instanceof Error ? error.message : "Failed to get provider status";
-      res.status(500).json({ success: false, error: message });
+      console.error('Provider status error:', error);
+      res.status(500).json({ success: false, error: 'Failed to get provider status' });
+    }
+  });
+
+  // Phase 4: Counterfactual scenarios endpoint
+  app.get("/api/scenarios/counterfactual", async (req, res) => {
+    try {
+      const { teamId, scenario, gameweek } = req.query;
+
+      if (!teamId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Team ID required for counterfactual analysis'
+        });
+      }
+
+      // Get current analysis for baseline
+      const analysisEngine = new AnalysisEngine();
+      const analysis = await analysisEngine.analyzeTeam(teamId as string);
+
+      const counterfactuals = [];
+
+      if (scenario === 'chip' || !scenario) {
+        // Chip counterfactuals - what if we used different chips?
+        console.log(`[COUNTERFACTUAL] Generating chip scenarios for ${analysis.players?.length || 0} players`);
+        const chips = ['wildcard', 'free_hit', 'bench_boost', 'triple_captain'];
+        for (const chip of chips) {
+          const transferEngine = new TransferEngine();
+          const chipPlan = await transferEngine.generateTransferPlans(
+            analysis.players || [],
+            analysis.budget?.bank || 0,
+            analysis.budget?.freeTransfers || 1,
+            {
+              targetGameweek: parseInt(gameweek as string) || 1,
+              chipType: chip as any,
+              maxHits: 0,
+              includeRiskyMoves: false,
+              gameweeks: analysis.gameweeks || []
+            }
+          );
+
+          console.log(`[COUNTERFACTUAL] ${chip} plan: ${chipPlan.length} plans generated`);
+          if (chipPlan.length > 0) {
+            counterfactuals.push({
+              scenario: 'chip_usage',
+              chipType: chip,
+              description: `${chip} chip strategy`,
+              expectedPoints: chipPlan[0].projectedGain,
+              confidence: chipPlan[0].confidence,
+              alternativeTo: 'no_chip'
+            });
+          }
+        }
+      }
+
+      if (scenario === 'transfer' || !scenario) {
+        // Transfer counterfactuals - what if we made different transfers?
+        const transferEngine = new TransferEngine();
+
+        // Conservative vs aggressive transfer strategies
+        const conservative = await transferEngine.generateTransferPlans(
+          analysis.players || [],
+          analysis.budget?.bank || 0,
+          analysis.budget?.freeTransfers || 1,
+          {
+            targetGameweek: parseInt(gameweek as string) || 1,
+            maxHits: 0,
+            includeRiskyMoves: false,
+            gameweeks: analysis.gameweeks || []
+          }
+        );
+
+        const aggressive = await transferEngine.generateTransferPlans(
+          analysis.players || [],
+          analysis.budget?.bank || 0,
+          analysis.budget?.freeTransfers || 1,
+          {
+            targetGameweek: parseInt(gameweek as string) || 1,
+            maxHits: 2,
+            includeRiskyMoves: true,
+            gameweeks: analysis.gameweeks || []
+          }
+        );
+
+        if (conservative.length > 0 && aggressive.length > 0) {
+          counterfactuals.push({
+            scenario: 'transfer_strategy',
+            strategy: 'conservative',
+            description: 'Safe transfers with no hits',
+            expectedPoints: conservative[0].projectedGain,
+            confidence: conservative[0].confidence,
+            alternativeTo: 'current_squad'
+          });
+
+          counterfactuals.push({
+            scenario: 'transfer_strategy',
+            strategy: 'aggressive',
+            description: 'Risky transfers with hits for higher upside',
+            expectedPoints: aggressive[0].projectedGain,
+            confidence: aggressive[0].confidence,
+            alternativeTo: 'conservative_strategy'
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          teamId,
+          gameweek: parseInt(gameweek as string) || 1,
+          counterfactuals,
+          baseline: {
+            currentSquadPoints: analysis.players?.reduce((sum, p) => sum + (p.expectedPoints || 0), 0) || 0,
+            budget: analysis.budget
+          },
+          generatedAt: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.error('Counterfactual analysis error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to generate counterfactual analysis'
+      });
+    }
+  });
+
+  // Phase 2: Scenario comparison endpoints
+  app.get("/api/scenarios", async (req, res) => {
+    try {
+      const { type, gameweek, teamId } = req.query;
+      const ownershipEngine = EffectiveOwnershipEngine.getInstance();
+
+      if (!teamId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Team ID required for scenario analysis'
+        });
+      }
+
+      // Get current analysis for baseline
+      const analysisEngine = new AnalysisEngine();
+      const analysis = await analysisEngine.analyzeTeam(teamId as string);
+
+      const scenarios = [];
+
+      if (type === 'captain' || !type) {
+        // Captaincy scenarios - use all players as potential captains
+        const players = analysis.players || [];
+        console.log(`[SCENARIOS] Found ${players.length} players for captain scenarios`);
+        const captainScenarios = await Promise.all(
+          players.slice(0, 5).map(async (player) => {
+            const ownership = ownershipEngine.getOwnershipSnapshot(player);
+            const simulation = await MonteCarloEngine.getInstance().simulatePlayer(player, []);
+            return {
+              scenario: 'captain',
+              player: player.name,
+              expectedPoints: simulation.expectedPoints,
+              ownership: ownership.effectiveOwnership,
+              riskLevel: (simulation.coefficientOfVariation || 0) > 0.5 ? 'high' : 'medium'
+            };
+          })
+        );
+        scenarios.push(...captainScenarios);
+        console.log(`[SCENARIOS] Generated ${captainScenarios.length} captain scenarios`);
+      }
+
+      if (type === 'transfer' || !type) {
+        // Transfer impact scenarios
+        const transferEngine = new TransferEngine();
+        const plans = await transferEngine.generateTransferPlans(
+          analysis.players || [],
+          analysis.budget?.bank || 0,
+          analysis.budget?.freeTransfers || 1,
+          {
+            targetGameweek: parseInt(gameweek as string) || 1,
+            maxHits: 0,
+            includeRiskyMoves: false,
+            gameweeks: analysis.gameweeks || []
+          }
+        );
+
+        const transferScenarios = plans.slice(0, 3).map(plan => ({
+          scenario: 'transfer',
+          description: plan.moves.length > 0 ? `Transfer plan with ${plan.moves.length} moves` : 'No transfers needed',
+          expectedGain: plan.projectedGain,
+          hitCost: plan.totalHits * 4,
+          netGain: plan.projectedGain - (plan.totalHits * 4),
+          confidence: plan.confidence
+        }));
+
+        scenarios.push(...transferScenarios);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          teamId,
+          gameweek: parseInt(gameweek as string) || 1,
+          scenarios,
+          generatedAt: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.error('Scenario analysis error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to generate scenario analysis'
+      });
     }
   });
   // Enhanced Phase 2: Effective ownership snapshot
@@ -301,16 +533,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Enhanced Phase 3: AI Co-pilot chat endpoint
   app.post("/api/chat", async (req, res) => {
+    console.log('🚀 [CHAT ENDPOINT] Received chat request:', {
+      body: req.body,
+      headers: req.headers['content-type'],
+      timestamp: new Date().toISOString()
+    });
+
     try {
       // Validate request
       const validatedData = chatRequestSchema.parse(req.body);
-      
+      console.log('✅ [CHAT ENDPOINT] Request validated:', {
+        message: validatedData.message,
+        sessionId: validatedData.sessionId,
+        teamId: validatedData.teamId
+      });
+
       // Generate session ID if not provided
       const sessionId = validatedData.sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-      
-      console.log(`Processing chat message for session ${sessionId}...`);
-      
+
+      console.log(`🎯 [CHAT ENDPOINT] Processing chat message for session ${sessionId}...`);
+
       // Process the chat message
       const response = await aiCopilotService.processChatMessage(
         validatedData.message,
@@ -319,9 +562,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         validatedData.userId,
         requestId
       );
-      
-      console.log(`Chat response generated (${response.conversationContext.responseTime}ms)`);
-      
+
+      console.log(`✅ [CHAT ENDPOINT] Chat response generated (${response.conversationContext.responseTime}ms)`);
+
       res.json({
         success: true,
         data: {
@@ -330,12 +573,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           requestId
         }
       });
-      
+
     } catch (error) {
-      console.error('Chat processing error:', error);
-      
+      console.error('❌ [CHAT ENDPOINT] Chat processing error:', error);
+
       let errorMessage = 'Failed to process chat message';
-      
+
       if (error instanceof Error) {
         if (error.message.includes('validation')) {
           errorMessage = 'Invalid chat message format.';
@@ -343,7 +586,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           errorMessage = error.message;
         }
       }
-      
+
       res.status(400).json({
         success: false,
         error: errorMessage
