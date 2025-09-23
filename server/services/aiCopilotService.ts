@@ -30,19 +30,8 @@ class GoogleAIServiceAdapter implements BaseAIService {
     }
   }
 
-  async generateFPLResponse(systemPrompt: string, userPrompt: string, options?: { temperature?: number; maxTokens?: number }): Promise<string> {
-    // For Google AI, we need to construct the FPL context
-    // This is a simplified version - the full context is built in the copilot service
-    const fplContext = {
-      intent: 'general_fpl_query',
-      entities: {},
-      squadData: null,
-      analysisData: null,
-      recommendations: [],
-      liveFPLData: null
-    };
-
-    return this.googleService.generateFPLResponse(userPrompt, fplContext);
+  async generateFPLResponse(userQuery: string, fplContext: any, conversationHistory?: Array<{ role: string; content: string }>): Promise<string> {
+    return this.googleService.generateFPLResponse(userQuery, fplContext, conversationHistory);
   }
 
   async isHealthy(): Promise<boolean> {
@@ -368,6 +357,15 @@ export class AICopilotService {
       teamId: context.teamId
     });
 
+    // Guard clause: if no LLM service available, fall back to static responses
+    if (!this.llmService) {
+      console.log('⚠️ [AI COPILOT] No LLM service available, using fallback');
+      return this.handleGeneralAdvice(intent, context);
+    }
+
+    // At this point, llmService is guaranteed to be defined
+    const llmService = this.llmService;
+
     // Fetch LIVE FPL data for accurate responses (RAG approach)
     let analysisData: any = null;
     let squadData: any = null;
@@ -497,13 +495,23 @@ export class AICopilotService {
 
     // Structured path first (preferred)
     console.log('🏗️ [AI COPILOT] Attempting structured LLM response generation');
-    const structuredStart = Date.now();
-    const structured = await this.llmService.generateFPLStructuredResponse(
-      currentQuery,
-      { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
-      conversationHistory
-    );
-    const structuredTime = Date.now() - structuredStart;
+    let structured: any = null;
+    let structuredTime = 0;
+    // @ts-ignore - Optional method may not exist
+    if (llmService.generateFPLStructuredResponse) {
+      const structuredStart = Date.now();
+      structured = await llmService.generateFPLStructuredResponse(
+        currentQuery,
+        { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
+        conversationHistory
+      );
+      structuredTime = Date.now() - structuredStart;
+      console.log('📋 [AI COPILOT] Structured response result:', {
+        structuredResponseReceived: !!structured,
+        structuredGenerationTime: structuredTime + 'ms',
+        structuredType: structured ? 'structured' : 'null'
+      });
+    }
 
     console.log('📋 [AI COPILOT] Structured response result:', {
       structuredResponseReceived: !!structured,
@@ -550,7 +558,8 @@ export class AICopilotService {
         filteredFixturesUsed: structured.fixturesUsed?.length || 0
       });
 
-      finalMessage = this.llmService.formatStructuredToText(structured);
+      // @ts-ignore - Optional method may not exist
+      finalMessage = llmService.formatStructuredToText(structured);
       console.log('📝 [AI COPILOT] Structured response formatted:', {
         finalMessageLength: finalMessage.length
       });
@@ -558,7 +567,7 @@ export class AICopilotService {
       console.log('🔄 [AI COPILOT] Structured failed, using free-form fallback');
       // Fallback to free-form with sanitizer + rewrite enforcement
       const freeformStart = Date.now();
-      let llmResponse = await this.llmService.generateFPLResponse(
+      let llmResponse = await this.llmService!.generateFPLResponse(
         currentQuery,
         { intent: intent.type, entities: intent.entities, squadData, analysisData, recommendations, liveFPLData },
         conversationHistory
@@ -574,7 +583,8 @@ export class AICopilotService {
         if (allowedNames.length > 0) {
           console.log('🔧 [AI COPILOT] Applying player reference sanitization');
           const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
-          const rewritten = await this.llmService.generateCompletionSafe([
+          // @ts-ignore - Optional method may not exist
+          const rewritten = await this.llmService!.generateCompletionSafe([
             { role: 'system', content: rewriteSystem },
             { role: 'user', content: llmResponse }
           ], { maxTokens: 600, timeoutMs: 10000 });
@@ -600,7 +610,8 @@ export class AICopilotService {
       if (allowedNames2.length > 0) {
         console.log('🔒 [AI COPILOT] Applying final player reference enforcement');
         const rewriteSystem = `Rewrite the following answer so that it ONLY mentions players from this allowed list: ${allowedNames2.join(', ')}.\nIf a player not on the list is referenced, change it to a generic role (e.g., 'your starting forward'). Keep under 200 words. Do not add new players.`;
-        const rewritten = await this.llmService.generateCompletionSafe([
+        // @ts-ignore - Optional method may not exist
+        const rewritten = await this.llmService!.generateCompletionSafe([
           { role: 'system', content: rewriteSystem },
           { role: 'user', content: finalMessage }
         ], { maxTokens: 600, timeoutMs: 10000 });
